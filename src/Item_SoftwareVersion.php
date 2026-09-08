@@ -134,6 +134,21 @@ class Item_SoftwareVersion extends CommonDBRelation
 
     public function prepareInputForAdd($input)
     {
+        if (
+            isset($input['itemtype'], $input['items_id'], $input['softwareversions_id'])
+            && countElementsInTable(
+                static::getTable(),
+                [
+                    'itemtype'            => $input['itemtype'],
+                    'items_id'            => $input['items_id'],
+                    'softwareversions_id' => $input['softwareversions_id'],
+                ]
+            ) > 0
+        ) {
+            Session::addMessageAfterRedirect(__s('This software version is already installed on this item.'), false, ERROR);
+            return false;
+        }
+
         $input = $this->prepareInputForAddAndUpdate($input, true);
         if ($input === false) {
             return false;
@@ -685,7 +700,7 @@ class Item_SoftwareVersion extends CommonDBRelation
                         => min($_SESSION['glpilist_limit'], $number),
                      'container'
                         => 'mass' . self::class . $rand,
-                     'specific_actions'
+                     'add_actions'
                         => [self::class . MassiveAction::CLASS_ACTION_SEPARATOR . 'move_version'
                                        => _x('button', 'Move'),
                             'purge' => _x('button', 'Delete permanently'),

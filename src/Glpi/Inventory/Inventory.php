@@ -73,6 +73,8 @@ use Glpi\Inventory\Asset\VirtualMachine;
 use Glpi\Inventory\Asset\Volume;
 use Glpi\Inventory\MainAsset\Itemtype;
 use Glpi\Inventory\MainAsset\MainAsset;
+use Glpi\Inventory\MainAsset\NetworkEquipment;
+use Glpi\Inventory\MainAsset\Unmanaged;
 use Lockedfield;
 use Log;
 use RecursiveDirectoryIterator;
@@ -228,7 +230,7 @@ class Inventory
             }
             return false;
         } finally {
-            $this->raw_data = $data;
+            $this->raw_data = $this->getCleanedObject($data);
         }
 
         if ($this->inventory_tmpfile !== false) {
@@ -469,8 +471,14 @@ class Inventory
             }
         } catch (Throwable $e) {
             if (!defined('TU_USER')) {
-                $DB->rollback();
+                try {
+                    $DB->rollback();
+                } catch (Throwable $rollback_e) {
+                    // Catch rollback failures so the original exception is propagated
+                }
             }
+
+            // Propagate the exception
             throw $e;
         } finally {
             unset($_SESSION['glpiinventoryuserrunning']);
@@ -848,6 +856,14 @@ class Inventory
             $this->mainasset->setExtraData($this->data);
             $this->mainasset->setAssets($this->assets);
             $item_start = microtime(true);
+            //cleanup tag
+            if (
+                ($agent = $this->mainasset?->getAgent()) instanceof Agent
+                && !($this->mainasset instanceof NetworkEquipment || $this->mainasset instanceof Unmanaged)
+                && !isset($this->metadata['tag'])
+            ) {
+                $agent->update(['tag' => '', 'id' => $agent->getID()]);
+            }
             $this->mainasset->handle();
             $this->item = $this->mainasset->getItem();
             $this->addBench($this->item->getType(), 'handle', $item_start);
@@ -995,7 +1011,7 @@ class Inventory
             case 'cleantemp':
                 return ['description' => __('Clean temporary files created from inventories')];
 
-            case 'cleanorphans':
+            case 'cleanorphansinventory':
                 return ['description' => __('Clean inventories orphaned files')];
         }
         return [];
@@ -1013,10 +1029,13 @@ class Inventory
         $conf = new Conf();
         $temp_files = glob(GLPI_INVENTORY_DIR . '/*.{' . implode(',', $conf->knownInventoryExtensions()) . '}', GLOB_BRACE);
 
+        // Files created by `tempnam()` while an inventory is being processed (see `Inventory::setData()`).
+        $temp_files = array_merge($temp_files, glob(GLPI_INVENTORY_DIR . '/{xml_,json_}*', GLOB_BRACE));
+
         $time_limit = 60 * 60 * 12;//12 hours
         foreach ($temp_files as $temp_file) {
             //drop only inventory files that have been created more than 12 hours ago
-            if (time() - filemtime($temp_file) >= $time_limit) {
+            if (is_file($temp_file) && time() - filemtime($temp_file) >= $time_limit) {
                 try {
                     unlink($temp_file);
                     $message = sprintf(__('File %1$s has been removed'), $temp_file);
@@ -1042,7 +1061,7 @@ class Inventory
      *
      * @return int
      **/
-    public static function cronCleanorphans($task)
+    public static function cronCleanOrphansInventory($task)
     {
         global $DB;
 
@@ -1050,10 +1069,15 @@ class Inventory
         $existing_types = glob(GLPI_INVENTORY_DIR . '/*', GLOB_ONLYDIR);
 
         foreach ($existing_types as $existing_type) {
-            /** @var class-string<CommonDBTM> $itemtype */
             $itemtype = str_replace(GLPI_INVENTORY_DIR . '/', '', $existing_type);
             // use `getItemForItemtype` to fix classname case (i.e. `refusedequipement` -> `RefusedEquipement`)
-            $itemtype = getItemForItemtype($itemtype)::getType();
+            $item = getItemForItemtype($itemtype);
+            if ($item === false) {
+                // Class might not exist if it refer to a deleted custom asset type
+                continue;
+            }
+            /** @var class-string<CommonDBTM> $itemtype */
+            $itemtype = $item::getType();
             $inventory_files = new RegexIterator(
                 new RecursiveIteratorIterator(
                     new RecursiveDirectoryIterator($existing_type)
@@ -1157,5 +1181,29 @@ class Inventory
             }
         }
         return $itemtypes;
+    }
+
+    private function getCleanedObject(stdClass $data): stdClass
+    {
+        $cleaned = new stdClass();
+        // @phpstan-ignore foreach.nonIterable
+        foreach ($data as $key => $value) {
+            $cleaned->$key = $this->getCleanedValue($value);
+        }
+        return $cleaned;
+    }
+
+    private function getCleanedValue(mixed $value): mixed
+    {
+        if ($value instanceof stdClass) {
+            return $this->getCleanedObject($value);
+        }
+        if (is_array($value)) {
+            return \array_map($this->getCleanedValue(...), $value);
+        }
+        if (\is_string($value)) {
+            return strip_tags($value);
+        }
+        return $value;
     }
 }

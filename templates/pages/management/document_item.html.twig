@@ -55,14 +55,14 @@
                         }) }}
 
                         <div class="text-end">
-                            {{ inputs.submit('add', _x('button', 'Add a new file'), 1) }}
+                            {{ inputs.submit('add', _x('button', 'Add a new file'), 1, {'icon': 'ti ti-plus'}) }}
                         </div>
 
                         {{ inputs.hidden('entities_id', entity) }}
                         {{ inputs.hidden('is_recursive', item.isRecursive() ? '1' : '0') }}
                         {{ inputs.hidden('itemtype', item.getType()) }}
                         {{ inputs.hidden('items_id', item.getID()) }}
-                        {% if item.getType == 'Ticket' %}
+                        {% if item.getType() == 'Ticket' %}
                             {{ inputs.hidden('tickets_id', item.getID()) }}
                         {% endif %}
                         {{ inputs.hidden('_glpi_csrf_token', csrf_token()) }}
@@ -92,7 +92,7 @@
                         </div>
 
                         <div class="d-flex flex-column align-items-center text-end mt-auto">
-                            {{ inputs.submit('add', _x('button', 'Associate'), 1) }}
+                            {{ inputs.submit('add', _x('button', 'Associate'), 1, {'icon': 'ti ti-link'}) }}
                         </div>
 
                         {{ inputs.hidden('itemtype', item.getType()) }}

@@ -35,10 +35,10 @@
 namespace tests\units;
 
 use Computer;
-use Glpi\Cache\CacheManager;
 use Glpi\Exception\Http\AccessDeniedHttpException;
 use Glpi\Exception\SessionExpiredException;
 use Glpi\Tests\DbTestCase;
+use Laminas\I18n\Translator\Translator;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Profile;
 use Profile_User;
@@ -46,8 +46,46 @@ use ProfileRight;
 use ReflectionClass;
 use User;
 
+use function Safe\copy;
+use function Safe\file_put_contents;
+use function Safe\glob;
+use function Safe\mkdir;
+use function Safe\rmdir;
+use function Safe\unlink;
+
 class SessionTest extends DbTestCase
 {
+    /**
+     * Language used to test the local i18n files.
+     * It must be a language that is not used by any other test, as the local
+     * i18n overrides would be visible by the tests running concurrently.
+     */
+    private const LOCAL_I18N_LANGUAGE = 'mn_MN';
+
+    /**
+     * Directory holding the local i18n files used by the tests, if any.
+     */
+    private ?string $local_i18n_directory = null;
+
+    public function tearDown(): void
+    {
+        if ($this->local_i18n_directory !== null) {
+            /** @var Translator $TRANSLATE */
+            global $TRANSLATE;
+
+            foreach (glob($this->local_i18n_directory . '/*') as $local_file) {
+                unlink($local_file);
+            }
+            rmdir($this->local_i18n_directory);
+            $this->local_i18n_directory = null;
+
+            // Drop the translations loaded from the local files.
+            $TRANSLATE->clearCache('glpi', self::LOCAL_I18N_LANGUAGE);
+        }
+
+        parent::tearDown();
+    }
+
     public function testAddMessageAfterRedirect()
     {
         $err_msg = 'Something is broken. Weird.';
@@ -218,43 +256,48 @@ class SessionTest extends DbTestCase
 
     public function testLocalI18n()
     {
-        $manager = new CacheManager();
-        $cache = $manager->getTranslationsCacheInstance();
+        /** @var Translator $TRANSLATE */
+        global $TRANSLATE;
+
+        $language = self::LOCAL_I18N_LANGUAGE;
+        $mofile = $language . '.mo';
+        $phpfile = $language . '.php';
+
+        //create a dedicated directory for local i18n ("core_*" directories are loaded like the "core" one)
+        $directory = GLPI_LOCAL_I18N_DIR . '/core_test_' . uniqid();
+        mkdir($directory, 0o755, true);
+        $this->local_i18n_directory = $directory;
 
         //load locales
-        \Session::loadLanguage('en_GB');
-        $this->assertEquals('Login', __('Login'));
+        \Session::loadLanguage($language);
+        $default_login = __('Login');
+        $default_password = __('Password');
 
-        //create directory for local i18n
-        if (!file_exists(GLPI_LOCAL_I18N_DIR . '/core')) {
-            mkdir(GLPI_LOCAL_I18N_DIR . '/core');
-        }
+        //make sure the language catalog was actually loaded (`loadLanguage()` silently falls back to en_GB)
+        $this->assertNotEquals('Login', $default_login);
 
         //write local MO file with i18n override
         copy(
             __DIR__ . '/../local_en_GB.mo',
-            GLPI_LOCAL_I18N_DIR . '/core/en_GB.mo'
+            $directory . '/' . $mofile
         );
-        $cache->clear();
-        \Session::loadLanguage('en_GB');
+        $TRANSLATE->clearCache('glpi', $language);
+        \Session::loadLanguage($language);
 
         $this->assertEquals('Login from local gettext', __('Login'));
-        $this->assertEquals('Password', __('Password'));
+        $this->assertEquals($default_password, __('Password'));
 
         //write local PHP file with i18n override
         file_put_contents(
-            GLPI_LOCAL_I18N_DIR . '/core/en_GB.php',
+            $directory . '/' . $phpfile,
             "<?php\n\$lang['Login'] = 'Login from local PHP';\n\$lang['Password'] = 'Password from local PHP';\nreturn \$lang;"
         );
-        $cache->clear();
-        \Session::loadLanguage('en_GB');
+        $TRANSLATE->clearCache('glpi', $language);
+        \Session::loadLanguage($language);
 
+        //MO file takes precedence over the PHP one
         $this->assertEquals('Login from local gettext', __('Login'));
         $this->assertEquals('Password from local PHP', __('Password'));
-
-        //cleanup -- keep at the end
-        unlink(GLPI_LOCAL_I18N_DIR . '/core/en_GB.php');
-        unlink(GLPI_LOCAL_I18N_DIR . '/core/en_GB.mo');
     }
 
     public static function mustChangePasswordProvider()
@@ -1627,5 +1670,17 @@ class SessionTest extends DbTestCase
         $this->login('glpi');
         \Html::generateMenuSession(true);
         $this->assertArrayHasKey('content', $_SESSION['glpimenu']['config']);
+    }
+
+    public function testLoadEntitySetsParentEntities(): void
+    {
+        // Non-regression: Session::loadEntity() was not setting glpiparententities,
+        // causing getEntitiesRestrictRequest() to call getAncestorsOf("glpi_entities", '')
+        // and generate an invalid "IN ()" SQL clause.
+        \Session::loadEntity(0, true);
+
+        $this->assertArrayHasKey('glpiparententities', $_SESSION);
+        $this->assertArrayHasKey('glpiparententities_string', $_SESSION);
+        $this->assertIsArray($_SESSION['glpiparententities']);
     }
 }

@@ -122,10 +122,12 @@ class CronTask extends CommonDBTM
 
     public function cleanDBonPurge()
     {
-        // Delete related CronTaskLog.
-        // It cannot be done with `deleteChildrenAndRelationsFromDb` because `CronTaskLog` does not extend CommonDBConnexity.
-        $ctl = new CronTaskLog();
-        $ctl->deleteByCriteria(['crontasks_id' => $this->fields['id']]);
+        global $DB;
+
+        // Bulk delete (not deleteByCriteria()): a frequent task can accumulate huge log volumes,
+        // and CronTaskLog has no children/history/delete() so skipping per-row lifecycle event.
+        // `CronTaskLog::cleanOld()` do the same.
+        $DB->delete(CronTaskLog::getTable(), ['crontasks_id' => $this->fields['id']]);
     }
 
     /**
@@ -739,7 +741,7 @@ class CronTask extends CommonDBTM
      **/
     public static function getStateName($state)
     {
-        return match ($state) {
+        return match ((int) $state) {
             self::STATE_RUNNING => __('Running'),
             self::STATE_WAITING => __('Scheduled'),
             self::STATE_DISABLE => __('Disabled'),
@@ -779,7 +781,7 @@ class CronTask extends CommonDBTM
      **/
     public static function getModeName($mode)
     {
-        return match ($mode) {
+        return match ((int) $mode) {
             self::MODE_INTERNAL => __('GLPI'),
             self::MODE_EXTERNAL => __('CLI'),
             default => '???',

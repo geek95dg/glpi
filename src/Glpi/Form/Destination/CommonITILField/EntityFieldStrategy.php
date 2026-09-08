@@ -139,9 +139,14 @@ enum EntityFieldStrategy: string
         return (int) $value['items_id'];
     }
 
-    public function getEntityIdFromRequester(
-        array $input,
-    ): ?int {
+    /**
+     * @param array{_users_id_requester?: int[]} $input
+     * @return int|null
+     */
+    public function getEntityIdFromRequester(array $input): ?int
+    {
+        global $DB;
+
         // Load requesters from input
         $requesters = $input['_users_id_requester'] ?? null;
         if (!$requesters) {
@@ -155,54 +160,73 @@ enum EntityFieldStrategy: string
             return null;
         }
 
-        // Get profiles of the requester
-        $profiles = (new Profile_User())->find([
-            'users_id' => $requester->getID(),
+        $it = $DB->request([
+            'SELECT' => ['entities_id'],
+            'FROM'   => Profile_User::getTable(),
+            'WHERE'  => [
+                'users_id' => $requester->getID(),
+            ],
         ]);
 
         // User has no entity
-        if (count($profiles) == 0) {
+        if (count($it) === 0) {
             return null;
         }
-        $profile = current($profiles);
+        $entities = array_map('intval', array_column(iterator_to_array($it), 'entities_id'));
 
         // If only one profile, use its entity
-        if (count($profiles) == 1) {
-            return $profile['entities_id'];
+        if (count($entities) === 1) {
+            return $entities[0];
         }
 
-        // Look for default profile
-        $default_profiles = (new Profile_User())->find([
-            'users_id' => $requester->getID(),
-            'profiles_id' => new QuerySubQuery([
-                'SELECT' => 'id',
-                'FROM'   => Profile::getTable(),
-                'WHERE'  => [
-                    'interface'  => 'helpdesk',
-                    'is_default' => 1,
-                ],
-            ]),
-        ]);
-        if (count($default_profiles) == 1) {
-            $default_profile = current($default_profiles);
-            return $default_profile['entities_id'];
+        // Prefer the requester's own configured default entity (Preferences >
+        // Default entity), if they are actually assigned to it. This mirrors
+        // the entity GLPI itself would activate for that user on login.
+        $default_entity = $requester->fields['entities_id'];
+        if ($default_entity !== null && in_array((int) $default_entity, $entities, true)) {
+            return (int) $default_entity;
         }
 
-        // If one or more helpdesk profiles, use entity of the first profile
-        $helpdesk_profiles = (new Profile_User())->find([
-            'users_id' => $requester->getID(),
-            'profiles_id' => new QuerySubQuery([
-                'SELECT' => 'id',
-                'FROM'   => Profile::getTable(),
-                'WHERE'  => ['interface' => 'helpdesk'],
-            ]),
+        $default_profiles = $DB->request([
+            'SELECT' => ['entities_id'],
+            'FROM'   => Profile_User::getTable(),
+            'WHERE'  => [
+                'users_id' => $requester->getID(),
+                'profiles_id' => new QuerySubQuery([
+                    'SELECT' => 'id',
+                    'FROM'   => Profile::getTable(),
+                    'WHERE'  => [
+                        'interface'  => 'helpdesk',
+                        'is_default' => 1,
+                    ],
+                ]),
+            ],
+            'LIMIT' => 1,
         ]);
-        if (count($helpdesk_profiles) > 0) {
-            $helpdesk_profile = current($helpdesk_profiles);
-            return $helpdesk_profile['entities_id'];
+
+        if (count($default_profiles) === 1) {
+            return $default_profiles->current()['entities_id'];
+        }
+
+        $helpdesk_profiles = $DB->request([
+            'SELECT' => ['entities_id'],
+            'FROM'   => Profile_User::getTable(),
+            'WHERE'  => [
+                'users_id' => $requester->getID(),
+                'profiles_id' => new QuerySubQuery([
+                    'SELECT' => 'id',
+                    'FROM'   => Profile::getTable(),
+                    'WHERE'  => ['interface' => 'helpdesk'],
+                ]),
+            ],
+            'LIMIT' => 1,
+        ]);
+
+        if (count($helpdesk_profiles) === 1) {
+            return $helpdesk_profiles->current()['entities_id'];
         }
 
         // Fallback to first profile
-        return $profile['entities_id'];
+        return $entities[0];
     }
 }

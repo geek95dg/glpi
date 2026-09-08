@@ -51,6 +51,8 @@ abstract class CommonITILValidation extends CommonDBChild
     // From CommonDBTM
     public $auto_message_on_action    = false;
 
+    protected ?CommonITILObject $item = null;
+
     public static $log_history_add    = Log::HISTORY_LOG_SIMPLE_MESSAGE;
     public static $log_history_update = Log::HISTORY_LOG_SIMPLE_MESSAGE;
     public static $log_history_delete = Log::HISTORY_LOG_SIMPLE_MESSAGE;
@@ -86,6 +88,38 @@ abstract class CommonITILValidation extends CommonDBChild
         }
 
         return new $class();
+    }
+
+    /**
+     * Set the parent ITIL object, to avoid reloading it from the DB when it
+     * is already available (e.g. when building the ticket/change/problem timeline).
+     *
+     * @param CommonITILObject $parent Parent item
+     *
+     * @return void
+     */
+    final public function setParentItem(CommonITILObject $parent): void
+    {
+        $this->item = $parent;
+    }
+
+    /**
+     * Check if $this->item already contains the correct parent item and thus
+     * help us to avoid reloading it for no reason.
+     *
+     * @phpstan-assert-if-true !null $this->item
+     *
+     * @return bool
+     */
+    protected function isParentAlreadyLoaded(): bool
+    {
+        if (!isset($this->fields[static::$items_id])) {
+            return false;
+        }
+
+        return $this->item !== null
+            && $this->item->getType() === static::getItilObjectItemType()
+            && $this->item->getID() === $this->fields[static::$items_id];
     }
 
     /**
@@ -402,6 +436,7 @@ abstract class CommonITILValidation extends CommonDBChild
             'id' => $itilobject->getID(),
             'global_validation' => static::computeValidationStatus($itilobject),
             '_from_itilvalidation' => true,
+            '_trigger' => $this,
         ];
 
         // to fix lastupdater
@@ -440,7 +475,7 @@ abstract class CommonITILValidation extends CommonDBChild
                             $user->getName()
                         )),
                         false,
-                        ERROR
+                        WARNING
                     );
                 }
             } elseif (is_a($this->fields["itemtype_target"], CommonDBTM::class, true)) {
@@ -538,10 +573,12 @@ abstract class CommonITILValidation extends CommonDBChild
 
         // -- notifications
         if (
-            count($this->updates)
+            in_array('status', $this->updates)
+            && (int) $this->fields["status"] !== self::WAITING
             && $donotif
         ) {
-            $options  = ['validation_id'     => $this->fields["id"],
+            $options  = [
+                'validation_id'     => $this->fields["id"],
                 'validation_status' => $this->fields["status"],
             ];
             NotificationEvent::raiseEvent('validation_answer', $this->getItem(), $options, $this);
@@ -558,6 +595,7 @@ abstract class CommonITILValidation extends CommonDBChild
                 'id'                    => $item->getID(),
                 'global_validation'     => static::computeValidationStatus($item),
                 '_from_itilvalidation'  => true,
+                '_trigger'              => $this,
             ];
 
             if (!$item->update($input)) {
@@ -2127,7 +2165,7 @@ HTML;
         $itil_validationstep = static::getItilObjectItemType()::getValidationStepInstance();
         if (!$itil_validationstep->delete(['id' => $itils_validationsteps_id])) {
             throw new RuntimeException('Failed to delete unused approval step.');
-        };
+        }
     }
 
     public function recomputeItilStatus(): void
@@ -2149,6 +2187,7 @@ HTML;
                 'id' => $itil_object->getID(),
                 'global_validation' => self::computeValidationStatus($itil_object),
                 '_from_itilvalidation' => true,
+                '_trigger' => $this,
                 '_validationsteps_id' => $validationstep_id ?? null,
             ]
         );

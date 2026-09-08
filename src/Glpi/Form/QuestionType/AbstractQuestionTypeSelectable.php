@@ -38,6 +38,7 @@ namespace Glpi\Form\QuestionType;
 use Glpi\Application\View\TemplateRenderer;
 use Glpi\DBAL\JsonFieldInterface;
 use Glpi\Form\Condition\ConditionValueTransformerInterface;
+use Glpi\Form\FormTranslation;
 use Glpi\Form\Migration\FormQuestionDataConverterInterface;
 use Glpi\Form\Question;
 use Glpi\ItemTranslation\Context\TranslationHandler;
@@ -50,7 +51,7 @@ use function Safe\json_decode;
 /**
  * Short answers are single line inputs used to answer simple questions.
  */
-abstract class AbstractQuestionTypeSelectable extends AbstractQuestionType implements FormQuestionDataConverterInterface, TranslationAwareQuestionType, ConditionValueTransformerInterface
+abstract class AbstractQuestionTypeSelectable extends AbstractQuestionType implements FormQuestionDataConverterInterface, TranslationAwareQuestionType, ConditionValueTransformerInterface, PredefinedValueValidationInterface
 {
     public const TRANSLATION_KEY_OPTION = 'option';
 
@@ -146,6 +147,41 @@ abstract class AbstractQuestionTypeSelectable extends AbstractQuestionType imple
 TWIG;
 
         return $js;
+    }
+
+    #[Override]
+    public function formatPredefinedValue(string $value): ?string
+    {
+        $uuids = array_filter(
+            array_map('trim', explode(',', $value)),
+            fn($uuid) => $uuid !== ''
+        );
+
+        if ($uuids === []) {
+            return null;
+        }
+
+        return implode(',', $uuids);
+    }
+
+    #[Override]
+    public function isValidPredefinedValue(string $value, Question $question): bool
+    {
+        // A question that only accepts a single option can not decide which
+        // value to keep, the whole parameter is therefore rejected.
+        return $this->allowsMultipleDefaultValues($question)
+            || count(explode(',', $value)) === 1;
+    }
+
+    /**
+     * Check if the question allows several options to be selected by default
+     *
+     * @param ?Question $question
+     * @return bool
+     */
+    public function allowsMultipleDefaultValues(?Question $question): bool
+    {
+        return true;
     }
 
     #[Override]
@@ -396,6 +432,16 @@ TWIG;
                 >
                 <button
                     type="button"
+                    class="btn btn-sm btn-action px-1 text-nowrap {{ value ? '' : 'd-none' }}"
+                    data-glpi-form-editor-question-extra-details
+                    data-glpi-form-editor-question-option-copy-uuid
+                    data-glpi-clipboard-text="{{ uuid }}"
+                >
+                    <i class="ti ti-copy me-1"></i>
+                    <span>{{ translations.copy_uuid }}</span>
+                </button>
+                <button
+                    type="button"
                     class="btn btn-sm btn-icon btn-ghost-secondary {{ value ? '' : 'd-none' }}"
                     aria-label="{{ translations.remove_option }}"
                     data-glpi-form-editor-question-extra-details
@@ -449,6 +495,7 @@ TWIG;
                 'remove_option'     => __('Remove option'),
                 'selectable_option' => __('Selectable option'),
                 'enter_option'      => __('Enter an option'),
+                'copy_uuid'         => __('Copy UUID'),
             ],
         ]);
     }
@@ -515,10 +562,13 @@ TWIG;
             $answer = [$answer];
         }
 
-        // Replace uuids by labels
+        // Replace uuids by translated labels
         $options = $this->getOptions($question);
         $answer = array_map(
-            fn($uuid) => $options[$uuid] ?? '',
+            function ($uuid) use ($question, $options) {
+                $key = sprintf('%s-%s', self::TRANSLATION_KEY_OPTION, $uuid);
+                return FormTranslation::translate($question, $key) ?? ($options[$uuid] ?? '');
+            },
             $answer
         );
 

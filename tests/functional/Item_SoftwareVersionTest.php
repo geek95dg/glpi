@@ -41,9 +41,6 @@ use Glpi\Tests\DbTestCase;
 use Item_SoftwareVersion;
 use Toolbox;
 
-/**
- * @engine isolate
- */
 class Item_SoftwareVersionTest extends DbTestCase
 {
     public function testRelatedItemHasTab()
@@ -124,6 +121,41 @@ class Item_SoftwareVersionTest extends DbTestCase
 
         $this->setEntity('_test_root_entity', true);
         $this->assertSame($expected, $ins->prepareInputForAdd($input));
+    }
+
+    public function testPrepareInputForAddDuplicate()
+    {
+        $this->login();
+
+        $computer1 = getItemByTypeName('Computer', '_test_pc01');
+        $ver = getItemByTypeName('SoftwareVersion', '_test_softver_1', true);
+
+        $ins = new Item_SoftwareVersion();
+        $input = [
+            'items_id'              => $computer1->getID(),
+            'itemtype'              => 'Computer',
+            'softwareversions_id'   => $ver,
+        ];
+
+        $this->assertGreaterThan(0, $ins->add($input));
+
+        // Second install attempt of the same version on the same item must be rejected,
+        // not throw a DB unicity exception.
+        $ins2 = new Item_SoftwareVersion();
+        $this->assertFalse($ins2->add($input));
+        $this->hasSessionMessages(ERROR, ['This software version is already installed on this item.']);
+
+        $this->assertSame(
+            1,
+            countElementsInTable(
+                Item_SoftwareVersion::getTable(),
+                [
+                    'itemtype'            => 'Computer',
+                    'items_id'            => $computer1->getID(),
+                    'softwareversions_id' => $ver,
+                ]
+            )
+        );
     }
 
     public function testPrepareInputForUpdate()

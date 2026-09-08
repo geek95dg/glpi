@@ -39,6 +39,7 @@ use Computer;
 use Document;
 use Document_Item;
 use Entity;
+use FieldUnicity;
 use Glpi\Event;
 use Glpi\Exception\Http\AccessDeniedHttpException;
 use Glpi\Exception\Http\NotFoundHttpException;
@@ -348,16 +349,17 @@ class CommonDBTMTest extends DbTestCase
         global $DB;
 
         //insert case
-        $res = (int) $DB->updateOrInsert(
-            Computer::getTable(),
-            [
-                'serial' => 'serial-one',
-            ],
-            [
-                'name'   => 'serial-to-change',
-            ]
+        $this->assertTrue(
+            $DB->updateOrInsert(
+                Computer::getTable(),
+                [
+                    'serial' => 'serial-one',
+                ],
+                [
+                    'name'   => 'serial-to-change',
+                ]
+            )
         );
-        $this->assertGreaterThan(0, $res);
 
         $check = $DB->request([
             'FROM'   => Computer::getTable(),
@@ -1326,7 +1328,7 @@ class CommonDBTMTest extends DbTestCase
     {
         $this->login();
 
-        $field_unicity = new \FieldUnicity();
+        $field_unicity = new FieldUnicity();
         $this->assertGreaterThan(
             0,
             $field_unicity->add([
@@ -1381,7 +1383,7 @@ class CommonDBTMTest extends DbTestCase
 
         // create field unicity rule
         // for Computer itemtype and name field
-        $field_unicity = new \FieldUnicity();
+        $field_unicity = new FieldUnicity();
         $this->assertGreaterThan(
             0,
             $field_unicity->add([
@@ -1454,6 +1456,42 @@ class CommonDBTMTest extends DbTestCase
                 'entities_id' => getItemByTypeName('Entity', '_test_root_entity', true),
             ])
         );
+    }
+
+    public function testCheckUnicitySystemSQLCriteria()
+    {
+        $this->login();
+
+        $this->createItem(FieldUnicity::class, [
+            'entities_id' => $this->getTestRootEntity(true),
+            'itemtype' => 'Glpi\\CustomAsset\\Test01Asset',
+            'fields' => 'serial',
+            'is_active' => 1,
+            'action_refuse' => 1,
+        ]);
+        // No issues expected as these are different itemtypes
+        $original_asset_id = $this->createItem('Glpi\\CustomAsset\\Test01Asset', [
+            'name' => 'Test asset 1',
+            'entities_id' => $this->getTestRootEntity(true),
+            'serial' => '123456',
+        ])->getID();
+        $this->createItem('Glpi\\CustomAsset\\Test02Asset', [
+            'name' => 'Test asset 1',
+            'entities_id' => $this->getTestRootEntity(true),
+            'serial' => '123456',
+        ]);
+
+        // This should trigger the unicity error as it's the same itemtype and same serial
+        $asset_class = 'Glpi\\CustomAsset\\Test01Asset';
+        $asset = new $asset_class();
+        $this->assertFalse($asset->add([
+            'name' => 'Test asset 2',
+            'entities_id' => $this->getTestRootEntity(true),
+            'serial' => '123456',
+        ]));
+
+        $err_msg = 'Impossible record for Serial number = 123456<br>Other item exist<br>[<a href="/front/asset/asset.form.php?class=Test01&amp;id=' . $original_asset_id . '" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Test asset 1">Test asset 1</a> - ID: ' . $original_asset_id . ' - Serial number: 123456 - Entity: Root entity &gt; _test_root_entity]';
+        $this->hasSessionMessages(ERROR, [$err_msg]);
     }
 
     public function testAddFilesWithNewFile()
@@ -2402,6 +2440,71 @@ class CommonDBTMTest extends DbTestCase
         $this->assertEquals("Computer A2", $items[1]->getName());
         $this->assertEquals("Computer A3", $items[2]->getName());
         $this->assertEquals("Computer A4", $items[3]->getName());
+    }
+
+    public function testCleanRelationDataOnSharedTable(): void
+    {
+        /** @var array $CFG_GLPI */
+        global $CFG_GLPI;
+
+        $this->login();
+
+        $manufacturer = $this->createItem(\Manufacturer::class, ['name' => __FUNCTION__]);
+        $phone = $this->createItem(\Phone::class, [
+            'name'        => __FUNCTION__,
+            'entities_id' => $this->getTestRootEntity(only_id: true),
+        ]);
+        $antivirus = $this->createItem(\ItemAntivirus::class, [
+            'name'             => __FUNCTION__,
+            'itemtype'         => \Phone::class,
+            'items_id'         => $phone->getID(),
+            'manufacturers_id' => $manufacturer->getID(),
+        ]);
+
+        // Emulate a runtime state in which the `glpi_itemantiviruses` table has been attached to the
+        // deprecated `ComputerAntivirus` class, i.e. any code path resolving its table.
+        getTableForItemType(\ComputerAntivirus::class);
+
+        $this->assertTrue($manufacturer->delete(['id' => $manufacturer->getID()], true));
+
+        $this->assertTrue($antivirus->getFromDB($antivirus->getID()));
+        $this->assertSame(0, $antivirus->fields['manufacturers_id']);
+        $this->assertSame(\Phone::class, $antivirus->fields['itemtype']);
+        $this->assertSame($phone->getID(), $antivirus->fields['items_id']);
+    }
+
+    public function testCleanRelationDataOnTableOwnedByAbstractItemtypeWithGetById(): void
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        $this->login();
+
+        $validation_step = $this->createItem(\ValidationStep::class, [
+            'name'                                => __FUNCTION__,
+            'minimal_required_validation_percent' => 100,
+        ]);
+        $ticket = $this->createItem(\Ticket::class, ['name' => __FUNCTION__, 'content' => __FUNCTION__]);
+
+        // `glpi_itils_validationsteps` is expected to be owned by the abstract `ITIL_ValidationStep`
+        // class. Insert the row directly to not depend on the ITIL validation logic.
+        $DB->insert('glpi_itils_validationsteps', [
+            'validationsteps_id'                  => $validation_step->getID(),
+            'itemtype'                            => \Ticket::class,
+            'items_id'                            => $ticket->getID(),
+            'minimal_required_validation_percent' => 100,
+        ]);
+
+        $validation_step->cleanRelationData();
+
+        // The row is correctly deleted.
+        $this->assertSame(
+            0,
+            countElementsInTable(
+                'glpi_itils_validationsteps',
+                ['validationsteps_id' => $validation_step->getID()]
+            )
+        );
     }
 
     public static function getTemplateProvider(): iterable

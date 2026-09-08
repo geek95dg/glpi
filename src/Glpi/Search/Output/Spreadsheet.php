@@ -77,6 +77,9 @@ abstract class Spreadsheet extends ExportSearchOutput
         $spread = $this->getSpreasheet();
         $writer = $this->getWriter();
 
+        // Set custom value binder to prevent values starting with "=" to be interpreted as formulas
+        $spread->setValueBinder(new SpreadsheetValueBinder());
+
         //set styles
         $style = $spread->getDefaultStyle();
         $font = $style->getFont();
@@ -259,7 +262,7 @@ abstract class Spreadsheet extends ExportSearchOutput
                                 $titlecontain = sprintf(__('%1$s %2$s'), $titlecontain, $searchoptname);
                                 $itemtype     = getItemTypeForTable($searchopt[$criteria['field']]["table"]);
                                 $valuename    = '';
-                                if ($item = getItemForItemtype($itemtype)) {
+                                if ($itemtype !== null && $item = getItemForItemtype($itemtype)) {
                                     $valuename = $item->getValueToDisplay(
                                         $searchopt[$criteria['field']],
                                         $criteria['value']

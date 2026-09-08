@@ -37,6 +37,7 @@ namespace tests\units\Glpi\Form\Migration;
 use AbstractRightsDropdown;
 use Change;
 use Computer;
+use Dropdown;
 use Entity;
 use Glpi\DBAL\QueryExpression;
 use Glpi\Form\AccessControl\ControlType\AllowList;
@@ -98,6 +99,7 @@ use LogicException;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Problem;
+use Ramsey\Uuid\Uuid;
 use Ticket;
 
 final class FormMigrationTest extends DbTestCase
@@ -144,6 +146,7 @@ final class FormMigrationTest extends DbTestCase
             $DB->dropTable($table['TABLE_NAME']);
         }
 
+        $DB->clearSchemaCache();
         parent::tearDownAfterClass();
     }
 
@@ -2352,6 +2355,110 @@ final class FormMigrationTest extends DbTestCase
         );
     }
 
+    public function testFormMigrationVisibilityConditionsWithCommentAsCriteria(): void
+    {
+        global $DB;
+
+        // Create a form
+        $this->assertTrue($DB->insert(
+            'glpi_plugin_formcreator_forms',
+            [
+                'name' => 'Test form migration condition with comment as criteria',
+            ]
+        ));
+        $form_id = $DB->insertId();
+
+        // Insert a section
+        $this->assertTrue($DB->insert(
+            'glpi_plugin_formcreator_sections',
+            [
+                'plugin_formcreator_forms_id' => $form_id,
+            ]
+        ));
+        $section_id = $DB->insertId();
+
+        // Insert a description block (future Comment A): this is the CRITERIA source of the condition
+        $this->assertTrue($DB->insert(
+            'glpi_plugin_formcreator_questions',
+            [
+                'name'                           => 'Test form migration condition with comment as criteria - Criteria comment',
+                'plugin_formcreator_sections_id' => $section_id,
+                'fieldtype'                      => 'description',
+                'row'                            => 0,
+                'col'                            => 0,
+            ]
+        ));
+        $criteria_comment_id = $DB->insertId();
+
+        // Insert a regular question (future Question B) with show_rule=2 (visible_if):
+        // this is the TARGET of the condition (visible when Comment A is visible)
+        $this->assertTrue($DB->insert(
+            'glpi_plugin_formcreator_questions',
+            [
+                'name'                           => 'Test form migration condition with comment as criteria - Target question',
+                'plugin_formcreator_sections_id' => $section_id,
+                'fieldtype'                      => 'text',
+                'row'                            => 1,
+                'col'                            => 0,
+                'show_rule'                      => 2, // visible_if
+            ]
+        ));
+        $target_question_id = $DB->insertId();
+
+        // Insert condition: question B is visible when description A (→Comment A) is visible
+        // show_condition = 7 means VISIBLE in formcreator
+        $this->assertTrue($DB->insert(
+            'glpi_plugin_formcreator_conditions',
+            [
+                'itemtype'                        => 'PluginFormcreatorQuestion',
+                'items_id'                        => $target_question_id,
+                'plugin_formcreator_questions_id' => $criteria_comment_id,
+                'show_condition'                  => 7, // VISIBLE
+                'show_value'                      => '',
+                'show_logic'                      => 1,
+            ]
+        ));
+
+        // Process migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $this->setPrivateProperty($migration, 'result', new PluginMigrationResult());
+        $this->assertTrue($this->callPrivateMethod($migration, 'processMigration'));
+
+        /** @var Form $form */
+        $form = getItemByTypeName(Form::class, 'Test form migration condition with comment as criteria');
+        $this->assertNotFalse($form);
+        $this->assertCount(1, $form->getSections());
+        $this->assertCount(1, $form->getQuestions());
+        $this->assertCount(1, $form->getFormComments());
+
+        /** @var Question $target_question */
+        $target_question = getItemByTypeName(Question::class, 'Test form migration condition with comment as criteria - Target question');
+        $this->assertNotFalse($target_question);
+        $this->assertEquals(VisibilityStrategy::VISIBLE_IF, $target_question->getConfiguredVisibilityStrategy());
+
+        /** @var Comment $criteria_comment */
+        $criteria_comment = getItemByTypeName(Comment::class, 'Test form migration condition with comment as criteria - Criteria comment');
+        $this->assertNotFalse($criteria_comment);
+
+        $this->assertEquals(
+            [
+                [
+                    'value_operator' => ValueOperator::VISIBLE,
+                    'value'          => '',
+                    'logic_operator' => LogicOperator::AND,
+                ],
+            ],
+            array_map(
+                fn(ConditionData $condition) => [
+                    'value_operator' => $condition->getValueOperator(),
+                    'value'          => $condition->getValue(),
+                    'logic_operator' => $condition->getLogicOperator(),
+                ],
+                $target_question->getConfiguredConditionsData()
+            )
+        );
+    }
+
     public static function provideFormMigrationVisibilityConditionsForDestinations(): iterable
     {
         $creation_strategies = [
@@ -3657,6 +3764,54 @@ final class FormMigrationTest extends DbTestCase
         );
     }
 
+    public function testFormWithDropdownQuestionReferencingGenericObjectDropdown(): void
+    {
+        /** @var \DBmysql $DB */
+        global $DB;
+
+        // Arrange: create a form with a "dropdown" question referencing a GenericObject
+        // custom dropdown type (PluginGenericobjectSmartphoneModel -> Glpi\CustomAsset\smartphoneAssetModel)
+        $this->createSimpleFormcreatorForm("With generic object custom dropdown", [
+            [
+                'name'      => 'Generic object dropdown',
+                'fieldtype' => 'dropdown',
+                'itemtype'  => 'PluginGenericobjectSmartphoneModel',
+                'values'    => json_encode([
+                    'show_ticket_categories' => '',
+                    'show_tree_depth'        => '0',
+                    'show_tree_root'         => '0',
+                    'selectable_tree_root'   => '0',
+                ]),
+            ],
+        ]);
+
+        // Run GenericObject migration first so that DropdownDefinition for "smartphoneAssetModel" is created
+        // and itemtype references should be updated
+        $asset_migration = new GenericobjectPluginMigration($DB);
+        $asset_migration->execute();
+
+        // Arrange: Reset the dropdown itemtypes static cache
+        Dropdown::resetItemtypesStaticCache();
+
+        // Act: run form migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $migration->execute();
+
+        // Assert: the question should have been migrated with the correct migrated itemtype
+        $form = getItemByTypeName(Form::class, "With generic object custom dropdown");
+        $question_id = $this->getQuestionId($form, "Generic object dropdown");
+        $question = Question::getById($question_id);
+
+        $config = $question->getExtraDataConfig();
+        if (!$config instanceof QuestionTypeItemDropdownExtraDataConfig) {
+            $this->fail("Unexpected config class: " . get_class($config));
+        }
+        $this->assertEquals(
+            "Glpi\\CustomAsset\\smartphoneAssetModel",
+            $config->getItemtype()
+        );
+    }
+
     public function testNonVisiblePrivateFormMigration(): void
     {
         /** @var \DBmysql $DB */
@@ -3909,5 +4064,224 @@ final class FormMigrationTest extends DbTestCase
 
         // Assert: migration should be done without error
         $this->assertTrue($result->isFullyProcessed());
+    }
+
+    public function testFormMigrationWithDuplicateFormNames(): void
+    {
+        global $DB;
+
+        // Arrange: create two formcreator forms with the exact same name, entity
+        // and category. This reproduces a real-world scenario where users had
+        // duplicated form names in formcreator.
+        $duplicate_name = 'Duplicate form name test';
+        $this->createSimpleFormcreatorForm(
+            name: $duplicate_name,
+            questions: [
+                ['name' => 'Question in first form', 'fieldtype' => 'text'],
+            ],
+            properties: [
+                'uuid' => Uuid::uuid4(),
+            ]
+        );
+        $this->createSimpleFormcreatorForm(
+            name: $duplicate_name,
+            questions: [
+                ['name' => 'Question in second form', 'fieldtype' => 'text'],
+            ],
+            properties: [
+                'uuid' => Uuid::uuid4(),
+            ]
+        );
+
+        // Act: execute migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $this->setPrivateProperty($migration, 'result', new PluginMigrationResult());
+        $this->assertTrue($this->callPrivateMethod($migration, 'processMigration'));
+
+        // Assert: both forms must have been migrated as distinct GLPI forms.
+        $migrated_forms = $DB->request([
+            'SELECT' => ['id', 'name'],
+            'FROM'   => Form::getTable(),
+            'WHERE'  => ['name' => $duplicate_name],
+        ]);
+        $this->assertEquals(
+            2,
+            $migrated_forms->count(),
+            'Two distinct forms should have been created, one per formcreator form'
+        );
+    }
+
+    public function testFormMigrationWithCollidingFormUuids(): void
+    {
+        global $DB;
+
+        // Arrange: create two formcreator forms sharing the exact same UUID.
+        // Formcreator has no unique constraint on this column, so this can
+        // happen with real-world data (e.g. forms duplicated by a buggy tool).
+        $shared_uuid = (string) Uuid::uuid4();
+        $this->createSimpleFormcreatorForm(
+            name: 'Form with colliding uuid 1',
+            questions: [
+                ['name' => 'Question in first form', 'fieldtype' => 'text'],
+            ],
+            properties: [
+                'uuid' => $shared_uuid,
+            ]
+        );
+        $this->createSimpleFormcreatorForm(
+            name: 'Form with colliding uuid 2',
+            questions: [
+                ['name' => 'Question in second form', 'fieldtype' => 'text'],
+            ],
+            properties: [
+                'uuid' => $shared_uuid,
+            ]
+        );
+
+        // Act: execute migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $this->setPrivateProperty($migration, 'result', new PluginMigrationResult());
+        $this->assertTrue($this->callPrivateMethod($migration, 'processMigration'));
+
+        // Assert: both forms must have been migrated as distinct GLPI forms,
+        // despite sharing the same source UUID.
+        $migrated_forms = $DB->request([
+            'SELECT' => ['id', 'name'],
+            'FROM'   => Form::getTable(),
+            'WHERE'  => ['name' => ['Form with colliding uuid 1', 'Form with colliding uuid 2']],
+        ]);
+        $this->assertEquals(
+            2,
+            $migrated_forms->count(),
+            'Two distinct forms should have been created, one per formcreator form, despite the UUID collision'
+        );
+    }
+
+    public function testFormMigrationSubstituteUuidIsDeterministicAcrossReplays(): void
+    {
+        global $DB;
+
+        // Arrange: a formcreator form with no UUID, forcing a substitute one to be generated.
+        $this->createSimpleFormcreatorForm(
+            name: 'Form without uuid replayed',
+            questions: [
+                ['name' => 'Question', 'fieldtype' => 'text'],
+            ],
+        );
+
+        // Act: run the migration twice, as a real replay of the console command would.
+        $first_migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $this->setPrivateProperty($first_migration, 'result', new PluginMigrationResult());
+        $this->assertTrue($this->callPrivateMethod($first_migration, 'processMigration'));
+
+        $second_migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $this->setPrivateProperty($second_migration, 'result', new PluginMigrationResult());
+        $this->assertTrue($this->callPrivateMethod($second_migration, 'processMigration'));
+
+        // Assert: the replay reconciled with the form created on the first run instead of duplicating it.
+        $migrated_forms = $DB->request([
+            'SELECT' => ['id', 'uuid'],
+            'FROM'   => Form::getTable(),
+            'WHERE'  => ['name' => 'Form without uuid replayed'],
+        ]);
+        $this->assertEquals(
+            1,
+            $migrated_forms->count(),
+            'The substitute UUID must be the same on both runs, so the replay must not create a duplicate'
+        );
+    }
+
+    public function testFormMigrationReconcilesFormsMigratedBeforeUuidReconciliation(): void
+    {
+        global $DB;
+
+        // Arrange: a formcreator form with a UUID, as if Formcreator was upgraded after a first migration.
+        $source_uuid = (string) Uuid::uuid4();
+        $this->createSimpleFormcreatorForm(
+            name: 'Form migrated before uuid reconciliation',
+            questions: [
+                ['name' => 'Question', 'fieldtype' => 'text'],
+            ],
+            properties: [
+                'uuid' => $source_uuid,
+            ]
+        );
+
+        // Arrange: a GLPI form matching it by name/entity/category, but with an unrelated UUID,
+        // as produced by a migration run before reconciliation switched from name to uuid.
+        $legacy_form = $this->createItem(Form::class, [
+            'name'        => 'Form migrated before uuid reconciliation',
+            'entities_id' => 0,
+            'uuid'        => (string) Uuid::uuid4(),
+        ]);
+
+        // Act: execute migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $this->setPrivateProperty($migration, 'result', new PluginMigrationResult());
+        $this->assertTrue($this->callPrivateMethod($migration, 'processMigration'));
+
+        // Assert: the pre-existing form was adopted, not duplicated, and its uuid was upgraded.
+        $migrated_forms = $DB->request([
+            'SELECT' => ['id', 'uuid'],
+            'FROM'   => Form::getTable(),
+            'WHERE'  => ['name' => 'Form migrated before uuid reconciliation'],
+        ]);
+        $this->assertEquals(1, $migrated_forms->count());
+
+        $migrated_form = $migrated_forms->current();
+        $this->assertEquals($legacy_form->getID(), $migrated_form['id']);
+        $this->assertEquals($source_uuid, $migrated_form['uuid']);
+    }
+
+    public function testFormMigrationActorsWithEmptyDefaultValue(): void
+    {
+        global $DB;
+
+        // Arrange: create a form with an actor question with an empty default value
+        $this->createSimpleFormcreatorForm('Actor test with empty default value', [
+            [
+                'name'           => 'Actor',
+                'fieldtype'      => 'actor',
+                'default_values' => '',
+            ],
+        ]);
+
+        // Act: execute migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $result = $migration->execute();
+
+        // Assert: migration should be done without error
+        $this->assertTrue($result->isFullyProcessed());
+    }
+
+    public function testFormMigrationDropdownQuestionWithSLAItemtype(): void
+    {
+        global $DB;
+
+        // Arrange: create a form with a dropdown question with SLA itemtype
+        $this->createSimpleFormcreatorForm('Dropdown with SLA itemtype', [
+            [
+                'name'      => 'SLA dropdown',
+                'fieldtype' => 'dropdown',
+                'itemtype'  => 'SLA',
+                'values'    => json_encode([
+                    'show_service_level_types' => '0',
+                    'entity_restrict'          => '2',
+                ]),
+            ],
+        ]);
+
+        // Act: execute migration
+        $migration = new FormMigration($DB, FormAccessControlManager::getInstance());
+        $result = $migration->execute();
+
+        // Assert: migration should be done without error and the question should be migrated with the correct itemtype
+        $this->assertTrue($result->isFullyProcessed());
+        $question = getItemByTypeName(Question::class, 'SLA dropdown');
+        $config = $question->getExtraDataConfig();
+        if (!$config instanceof QuestionTypeItemDropdownExtraDataConfig) {
+            throw new LogicException('Config should be of type QuestionTypeItemDropdownExtraDataConfig');
+        }
+        $this->assertEquals('SLA', $config->getItemtype());
     }
 }

@@ -38,6 +38,7 @@ use Glpi\DBAL\QueryExpression;
 use Glpi\DBAL\QueryFunction;
 use Glpi\Features\AssetImage;
 use Glpi\Features\Clonable;
+use Glpi\Toolbox\URL;
 
 /**
  * Supplier class (suppliers)
@@ -386,10 +387,17 @@ class Supplier extends CommonDBTM
         $ret = $withname ? ('<span class="ms-3 me-1">' . htmlescape($this->fields["name"]) . '</span>') : '';
 
         if (!empty($this->fields['website'])) {
-            $ret .= "<a class='btn btn-icon btn-outline-secondary' href='" . htmlescape(Toolbox::formatOutputWebLink($this->fields['website'])) . "'
-                target='_blank' title=\"" . __s('Web') . "\">
-                <i class='ti ti-world' ></i>
-                </a>";
+            $website_url = URL::sanitizeURL(
+                Toolbox::formatOutputWebLink(
+                    $this->fields['website']
+                )
+            );
+            if ($website_url !== '') {
+                $ret .= "<a class='btn btn-icon btn-outline-secondary' href='" . htmlescape($website_url) . "'
+                    target='_blank' title=\"" . __s('Web') . "\">
+                    <i class='ti ti-world' ></i>
+                    </a>";
+            }
         }
         return $ret;
     }
@@ -447,16 +455,19 @@ class Supplier extends CommonDBTM
             $linkfield = 'consumableitems_id';
         }
 
-        if ($itemtype === Item_DeviceControl::class) {
-            $criteria['INNER JOIN']['glpi_devicecontrols'] = [
+        if (is_a($itemtype, Item_Devices::class, true) && !$item->isField($itemtype::getNameField())) {
+            $devicetype  = $itemtype::getDeviceType();
+            $devicetable = getTableForItemType($devicetype);
+
+            $criteria['INNER JOIN'][$devicetable] = [
                 'ON' => [
-                    'glpi_items_devicecontrols'   => 'devicecontrols_id',
-                    'glpi_devicecontrols'         => 'id',
+                    $itemtable   => $itemtype::$items_id_2,
+                    $devicetable => 'id',
                 ],
             ];
 
-            $linktype = 'DeviceControl';
-            $linkfield = 'devicecontrols_id';
+            $linktype  = $devicetype;
+            $linkfield = $itemtype::$items_id_2;
         }
 
         $linktable = getTableForItemType($linktype);

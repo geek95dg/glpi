@@ -231,7 +231,29 @@ class Controller extends CommonGLPI
         }
 
         // clean dir in case of update
-        Toolbox::deleteDir(GLPI_MARKETPLACE_DIR . "/{$this->plugin_key}");
+        $plugin_dir = GLPI_MARKETPLACE_DIR . "/{$this->plugin_key}";
+        $opcache_files = [];
+
+        // If OPCache is enabled, we must invalidate the cache for the affected plugin files before deleting them.
+        // Otherwise, a removed file may remain cached between the deletion and extraction steps,
+        // causing the application to execute an outdated version of the code.
+        if (function_exists('opcache_invalidate') && is_dir($plugin_dir)) {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($plugin_dir, \RecursiveDirectoryIterator::SKIP_DOTS)
+            );
+            foreach ($iterator as $file) {
+                if ($file->isFile() && $file->getExtension() === 'php') {
+                    $opcache_files[] = $file->getRealPath();
+                }
+            }
+        }
+
+        Toolbox::deleteDir($plugin_dir);
+
+        // Invalidate the cache for the affected files.
+        foreach ($opcache_files as $cached_file) {
+            opcache_invalidate($cached_file, true);
+        }
 
         $archive = new $driver($dest, $format);
         try {
@@ -386,12 +408,24 @@ class Controller extends CommonGLPI
     {
         $api          = self::getAPI();
         $api_plugin   = $api->getPlugin($this->plugin_key);
+
+        if ($plugin_inst === null) {
+            $plugin_inst = new Plugin();
+        }
+
         $local_plugin = $plugin_inst->fields;
 
         $api_version   = $api_plugin['version'] ?? "";
         $local_version = $local_plugin['version'] ?? "";
 
-        if (strlen($api_version) && $api_version !== $local_version) {
+        if (!$plugin_inst->isNewItem()) {
+            $plugin_inst->update([
+                'id'                        => $local_plugin['id'],
+                'highest_available_version' => $api_version,
+            ]);
+        }
+
+        if (strlen($api_version) && version_compare($api_version, $local_version, '>')) {
             return $api_version;
         }
 
@@ -704,5 +738,20 @@ class Controller extends CommonGLPI
         $config = Config::getConfigurationValues('core', ['marketplace_replace_plugins']);
 
         return (int) ($config['marketplace_replace_plugins'] ?? self::MP_REPLACE_ASK);
+    }
+
+    public static function countUpdatablePlugins(): int
+    {
+        $count = 0;
+        $plugin_inst = new Plugin();
+        $installed   = $plugin_inst->getList();
+
+        foreach ($installed as $plugin) {
+            if (isset($plugin['highest_available_version']) && version_compare($plugin['version'], $plugin['highest_available_version'], '<')) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 }

@@ -238,6 +238,14 @@ class Rack extends CommonDBTM implements AssignableItemInterface, DCBreadcrumbIn
         ];
 
         $tab[] = [
+            'id'                 => '9',
+            'table'              => $this->getTable(),
+            'field'              => 'max_power',
+            'name'               => __('Max. power (in watts)'),
+            'datatype'           => 'number',
+        ];
+
+        $tab[] = [
             'id'                 => '16',
             'table'              => $this->getTable(),
             'field'              => 'comment',
@@ -457,12 +465,11 @@ class Rack extends CommonDBTM implements AssignableItemInterface, DCBreadcrumbIn
         $cells    = [];
         $outbound = [];
         foreach ($racks as &$item) {
-            $rack->getFromResultSet($item);
             $in = false;
 
             $x = $y = 0;
             $coord = explode(',', $item['position']);
-            if (count($coord) == 2) {
+            if (count($coord) === 2) {
                 [$x, $y] = $coord;
                 $item['_x'] = (int) $x - 1;
                 $item['_y'] = (int) $y - 1;
@@ -480,15 +487,7 @@ class Rack extends CommonDBTM implements AssignableItemInterface, DCBreadcrumbIn
                 $outbound[] = $item;
             }
         }
-
-        $outbound = array_map(static function ($out) use ($rack) {
-            $rack->getFromResultSet($out);
-            return [$rack, $out];
-        }, $outbound);
-        $cells = array_map(static function ($cell) use ($rack) {
-            $rack->getFromDB($cell['id']);
-            return [$rack, $cell];
-        }, $cells);
+        unset($item);
 
         $blueprint_url = '';
         if (!empty($room->fields['blueprint'])) {

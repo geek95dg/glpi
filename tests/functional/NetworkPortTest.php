@@ -37,8 +37,10 @@ namespace tests\units;
 use Glpi\Asset\Capacity;
 use Glpi\Asset\Capacity\HasNetworkPortCapacity;
 use Glpi\Features\Clonable;
+use Glpi\Socket;
 use Glpi\Tests\DbTestCase;
 use NetworkPort;
+use NetworkPortEthernet;
 use Toolbox;
 
 class NetworkPortTest extends DbTestCase
@@ -457,5 +459,108 @@ class NetworkPortTest extends DbTestCase
                 }
             }
         }
+    }
+
+    public function testShowForItemDisplaysLinkedSocket()
+    {
+        $this->login();
+
+        $computer = getItemByTypeName('Computer', '_test_pc01');
+
+        // Add a network port with a linked socket
+        $networkport = new NetworkPort();
+        $np_id = $networkport->add([
+            'items_id'                    => $computer->getID(),
+            'itemtype'                    => 'Computer',
+            'entities_id'                 => $computer->fields['entities_id'],
+            'is_recursive'                => 0,
+            'logical_number'              => 7,
+            'mac'                         => '00:24:81:eb:c6:d7',
+            'instantiation_type'          => 'NetworkPortEthernet',
+            'name'                        => 'eth_socket',
+            'items_devicenetworkcards_id' => 0,
+            'type'                        => 'T',
+            'speed'                       => 1000,
+            '_create_children'            => true,
+        ]);
+        $this->assertGreaterThan(0, (int) $np_id);
+
+        $socket = new Socket();
+        $sockets_id = $socket->add([
+            'name'        => 'socket_1',
+            'items_id'    => '',
+            'itemtype'    => '',
+        ]);
+        $this->assertGreaterThan(0, (int) $sockets_id);
+
+        $ethernetPort = new NetworkPortEthernet();
+        $this->assertTrue($ethernetPort->getFromDBByCrit(['networkports_id' => $np_id]));
+        $this->assertTrue($ethernetPort->update([
+            'id'               => $ethernetPort->getID(),
+            'sockets_id'       => $sockets_id,
+            'networkports_id'  => $np_id,
+        ]));
+
+        // Add the socket display preference (option 9)
+        $displaypref = new \DisplayPreference();
+        $this->assertGreaterThan(0, (int) $displaypref->add([
+            'itemtype' => 'NetworkPort',
+            'users_id' => \Session::getLoginUserID(),
+            'num'      => 9,
+        ]));
+
+        foreach (['showForItem', 'displayTabContentForItem'] as $method) {
+            ob_start();
+            NetworkPort::$method($computer);
+            $result = ob_get_clean();
+            $this->assertStringContainsString(Socket::getTypeName(1), $result);
+            $this->assertStringContainsString('socket_1', $result);
+        }
+
+        // Check that the search engine can filter by the linked socket (option 9).
+        // This tests the JOIN between glpi_networkports and glpi_sockets, which is
+        // the actual fix for filtering/sorting by socket.
+        $data = \Search::getDatas('NetworkPort', [
+            'criteria' => [
+                ['field' => 9, 'searchtype' => 'contains', 'value' => 'socket_1'],
+            ],
+        ], [9]);
+        $this->assertGreaterThan(0, $data['data']['totalcount']);
+    }
+
+    public function testCanViewItemWithoutGlobalReadRight()
+    {
+        $this->login();
+
+        $computer = getItemByTypeName('Computer', '_test_pc01');
+
+        $networkport = $this->createItem(
+            NetworkPort::class,
+            [
+                'items_id'           => $computer->getID(),
+                'itemtype'           => $computer->getType(),
+                'entities_id'        => $computer->fields['entities_id'],
+                'is_recursive'       => 0,
+                'logical_number'     => 10,
+                'mac'                => '00:00:00:aa:bb:c0',
+                'instantiation_type' => NetworkPortEthernet::class,
+                'name'               => 'eth_test_rights',
+            ]
+        );
+
+        $this->assertTrue($networkport->canViewItem());
+
+        $old_networking_right = $_SESSION['glpiactiveprofile']['networking'] ?? 0;
+        $_SESSION['glpiactiveprofile']['networking'] = CREATE | UPDATE | DELETE | PURGE;
+
+        $this->assertTrue(NetworkPort::canView());
+        $this->assertTrue($networkport->canViewItem());
+
+        $_SESSION['glpiactiveprofile']['networking'] = 0;
+
+        $this->assertTrue(NetworkPort::canView());
+        $this->assertTrue($networkport->canViewItem());
+
+        $_SESSION['glpiactiveprofile']['networking'] = $old_networking_right;
     }
 }

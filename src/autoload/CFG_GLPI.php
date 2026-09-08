@@ -46,9 +46,17 @@ $CFG_GLPI = [];
 // set the default app_name
 $CFG_GLPI['app_name'] = 'GLPI';
 
-// dictionnaries
+// Languages dictionnary:
+// 0 => regionalized lang code
+// 1 => translated (native) name
+// 2 => MO file Name
+// 3 => jquery lang code
+// 4 => other JS codes. Tinymce has a specific mapping in Html::initEditorSystem().
+//      ⚠️ Also used for page lang! ⚠️
+// 5 => english name
+// 6 => number for plural
 $CFG_GLPI['languages'] = [
-    //Code       Name in native lang          LANG FILE      jquery tinymce english name            standard plural number
+    //Code       Name in native lang          LANG FILE      jquery  js    english name            standard plural number
     'ar_SA'  => ['العربية السعودية',          'ar_SA.mo',    'ar',    'ar_SA', 'arabic',            103],
     'ar_IQ'  => ['العربية العراق',            'ar_IQ.mo',    'ar',    'ar', 'irak arabic',          103],
     'ar_SY'  => ['العربية سوريا',             'ar_SY.mo',    'ar',    'ar', 'syria arabic',         103],
@@ -69,7 +77,7 @@ $CFG_GLPI['languages'] = [
     'es_CO'  => ['Español (Colombia)',        'es_CO.mo',    'es',    'es', 'spanish',              2],
     'es_ES'  => ['Español (España)',          'es_ES.mo',    'es',    'es', 'spanish',              2],
     'es_419' => ['Español (América Latina)',  'es_419.mo',   'es',    'es', 'spanish',              2],
-    'es_MX'  => ['Español (Mexico)',          'es_MX.mo',    'es',    'es', 'spanish',              2],
+    'es_MX'  => ['Español (México)',          'es_MX.mo',    'es',    'es', 'spanish',              2],
     'es_VE'  => ['Español (Venezuela)',       'es_VE.mo',    'es',    'es', 'spanish',              2],
     'eu_ES'  => ['Euskara',                   'eu_ES.mo',    'eu',    'eu', 'basque',               2],
     'fr_FR'  => ['Français',                  'fr_FR.mo',    'fr',    'fr', 'french',               2],
@@ -88,7 +96,7 @@ $CFG_GLPI['languages'] = [
     'lt_LT'  => ['Lietuvių',                  'lt_LT.mo',    'lt',    'lt', 'lithuanian',           2],
     'mn_MN'  => ['Монгол хэл',                'mn_MN.mo',    'mn',    'mn', 'mongolian',            2],
     'nl_NL'  => ['Nederlands',                'nl_NL.mo',    'nl',    'nl', 'dutch',                2],
-    'nl_BE'  => ['Flemish',                   'nl_BE.mo',    'nl',    'nl', 'flemish',              2],
+    'nl_BE'  => ['Vlaams',                    'nl_BE.mo',    'nl',    'nl', 'flemish',              2],
     'nb_NO'  => ['Norsk (Bokmål)',            'nb_NO.mo',    'no',    'nb', 'norwegian',            2],
     'nn_NO'  => ['Norsk (Nynorsk)',           'nn_NO.mo',    'no',    'nn', 'norwegian',            2],
     'fa_IR'  => ['فارسی',                     'fa_IR.mo',    'fa',    'fa', 'persian',              2],
@@ -110,12 +118,12 @@ $CFG_GLPI['languages'] = [
     'ja_JP'  => ['日本語',                    'ja_JP.mo',    'ja',    'ja', 'japanese',             2],
     'zh_CN'  => ['简体中文',                  'zh_CN.mo',    'zh-CN', 'zh', 'chinese',              2],
     'zh_TW'  => ['繁體中文',                  'zh_TW.mo',    'zh-TW', 'zh', 'chinese',              2],
-    'ko_KR'  => ['한국/韓國',                 'ko_KR.mo',    'ko',    'ko', 'korean',               1],
-    'zh_HK'  => ['香港',                      'zh_HK.mo',    'zh-HK', 'zh', 'chinese',              2],
-    'be_BY'  => ['Belarussian',               'be_BY.mo',    'be',    'be', 'belarussian',          3],
-    'is_IS'  => ['íslenska',                  'is_IS.mo',    'is',    'en', 'icelandic',            2],
+    'ko_KR'  => ['한국어',                    'ko_KR.mo',    'ko',    'ko', 'korean',               1],
+    'zh_HK'  => ['繁體中文（香港）',          'zh_HK.mo',    'zh-HK', 'zh', 'chinese',              2],
+    'be_BY'  => ['Беларуская',                'be_BY.mo',    'be',    'be', 'belarusian',           3],
+    'is_IS'  => ['Íslenska',                  'is_IS.mo',    'is',    'en', 'icelandic',            2],
     'eo'     => ['Esperanto',                 'eo.mo',       'eo',    'en', 'esperanto',            2],
-    'es_CL'  => ['Español chileno',           'es_CL.mo',    'es',    'es', 'spanish chilean',      2],
+    'es_CL'  => ['Español (Chile)',           'es_CL.mo',    'es',    'es', 'spanish chilean',      2],
 ];
 
 // Mapping of short language codes to their main locale
@@ -222,7 +230,7 @@ $CFG_GLPI['document_types']               = [Budget::class, CartridgeItem::class
     SoftwareLicense::class, Supplier::class, Ticket::class, User::class,
     Certificate::class, Cluster::class, ITILFollowup::class, ITILSolution::class,
     ChangeTask::class, ProblemTask::class, TicketTask::class, Appliance::class,
-    DatabaseInstance::class, Rack::class,
+    DatabaseInstance::class, Rack::class, Location::class,
 ];
 
 $CFG_GLPI['consumables_types']            = [Group::class, User::class];

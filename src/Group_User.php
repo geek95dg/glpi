@@ -116,7 +116,7 @@ class Group_User extends CommonDBRelation
      *
      * @since 0.84
      *
-     * @param int $groups_id Group ID
+     * @param int|int[] $groups_id Group ID
      * @param array   $condition Query extra condition (default [])
      *
      * @return array
@@ -413,14 +413,19 @@ class Group_User extends CommonDBRelation
         $used    = [];
         $ids     = [];
 
-        self::getDataForGroup($group, $used, $ids, $_GET['filters'] ?? [], true, false);
+        // Whether to also include members of this group's sub-groups.
+        // Persisted per-session, like other saved list options.
+        $has_children = $group->haveChildren();
+        $tree = $has_children ? (int) Session::getSavedOption(self::class, 'tree', 0) : 0;
+
+        self::getDataForGroup($group, $used, $ids, $_GET['filters'] ?? [], $tree, false);
         $all_groups = count($used);
         $used    = [];
         $ids     = [];
 
         // Retrieve member list
         // TODO: migrate to use CommonDBRelation::getListForItem()
-        $entityrestrict = self::getDataForGroup($group, $used, $ids, $_GET['filters'] ?? [], true, true);
+        $entityrestrict = self::getDataForGroup($group, $used, $ids, $_GET['filters'] ?? [], $tree, true);
 
         // We will load implicits members from parents groups and display
         // them after all the "direct" members
@@ -443,6 +448,24 @@ class Group_User extends CommonDBRelation
 
         if ($canedit) {
             self::showAddUserForm($group, $ids, $entityrestrict);
+        }
+
+        if ($has_children) {
+            // Carry over any active column filter: reloadTab() doesn't merge
+            // query strings across calls, so we must resend them ourselves.
+            $filters_qs = http_build_query(['filters' => $_GET['filters'] ?? []]);
+            $reload_suffix = $filters_qs !== '' ? ('&' . $filters_qs) : '';
+
+            echo TemplateRenderer::getInstance()->renderFromStringTemplate(<<<TWIG
+                {% import 'components/form/fields_macros.html.twig' as fields %}
+                <hr class="my-3">
+                <div class="d-flex justify-content-end">
+                    {{ fields.dropdownYesNo('tree', tree, label, {
+                        field_class: 'col-12 col-sm-8 col-md-5 col-xxl-4 mb-2',
+                        on_change: 'reloadTab("start=0&tree="+this.value+"' ~ reload_suffix ~ '")'
+                    }) }}
+                </div>
+TWIG, ['tree' => $tree, 'reload_suffix' => $reload_suffix, 'label' => __('Include members of sub-groups')]);
         }
 
         $number = count($used);
@@ -513,7 +536,7 @@ class Group_User extends CommonDBRelation
                     'label' => __('Delegatee'),
                     'filter_formatter' => 'yesno',
                 ],
-                'is_active' => [
+                'active' => [
                     'label' => __('Active'),
                     'filter_formatter' => 'yesno',
                 ],
@@ -524,7 +547,7 @@ class Group_User extends CommonDBRelation
                 'dynamic' => 'raw_html',
                 'manager' => 'raw_html',
                 'delegatee' => 'raw_html',
-                'is_active' => 'raw_html',
+                'active' => 'raw_html',
             ],
             'entries' => $entries,
             'total_number' => $number,
@@ -718,7 +741,9 @@ class Group_User extends CommonDBRelation
         if ($item instanceof Group) {
             $members = [];
             $ids = [];
-            self::getDataForGroup($item, $members, $ids, '', true, false);
+            // Always count direct members only: the tab badge cannot reflect
+            // the "tree" toggle live (reloadTab() never refreshes it).
+            self::getDataForGroup($item, $members, $ids, '', 0, false);
 
             // We will also count implicits members from parents groups
             $members = array_merge(

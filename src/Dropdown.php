@@ -42,6 +42,7 @@ use Glpi\Dropdown\DropdownDefinitionManager;
 use Glpi\Features\AssignableItem;
 use Glpi\Form\Category;
 use Glpi\Plugin\Hooks;
+use Glpi\Search\Provider\SQLProvider;
 use Glpi\SocketModel;
 
 use function Safe\json_encode;
@@ -367,8 +368,6 @@ class Dropdown
                     } else {
                         $options_tooltip['link'] = $item::getSearchURL();
                     }
-                } else {
-                    $options_tooltip['awesome-class'] = 'btn btn-outline-secondary fa-info';
                 }
 
                 if (empty($comment)) {
@@ -1245,6 +1244,9 @@ HTML;
                 ],
 
                 __('Assistance') => [
+                    'TicketTemplate'  => null,
+                    'ChangeTemplate'  => null,
+                    'ProblemTemplate' => null,
                     'ITILCategory' => null,
                     'TaskCategory' => null,
                     'TaskTemplate' => null,
@@ -1279,6 +1281,9 @@ HTML;
                     'DeviceGenericType' => null,
                     'DeviceSensorType' => null,
                     'DeviceMemoryType' => null,
+                    'DeviceHardDriveType' => null,
+                    'DeviceBatteryType' => null,
+                    'DeviceFirmwareType' => null,
                     'SupplierType' => null,
                     'InterfaceType' => null,
                     'DeviceCaseType' => null,
@@ -1304,10 +1309,12 @@ HTML;
                     'PhoneModel' => null,
 
                     // Devices models :
+                    'DeviceBatteryModel' => null,
                     'DeviceCameraModel' => null,
                     'DeviceCaseModel' => null,
                     'DeviceControlModel' => null,
                     'DeviceDriveModel' => null,
+                    'DeviceFirmwareModel' => null,
                     'DeviceGenericModel' => null,
                     'DeviceGraphicCardModel' => null,
                     'DeviceHardDriveModel' => null,
@@ -2966,30 +2973,32 @@ HTML;
 
         $ljoin = [];
 
+        $condition = [];
         if (!empty($post['condition']) && !is_array($post['condition'])) {
             // Retrieve conditions from SESSION using its key
             $key = $post['condition'];
             if (isset($_SESSION['glpicondition'][$key])) {
-                $post['condition'] = $_SESSION['glpicondition'][$key];
-            } else {
-                $post['condition'] = [];
+                $condition = $_SESSION['glpicondition'][$key];
             }
         }
 
-        if (!empty($post['condition'])) {
-            if (isset($post['condition']['LEFT JOIN'])) {
-                $ljoin = $post['condition']['LEFT JOIN'];
-                unset($post['condition']['LEFT JOIN']);
+        if (!empty($condition)) {
+            if (isset($condition['LEFT JOIN'])) {
+                $ljoin = $condition['LEFT JOIN'];
+                unset($condition['LEFT JOIN']);
             }
-            if (isset($post['condition']['WHERE'])) {
-                $where = array_merge($where, $post['condition']['WHERE']);
+            if (isset($condition['WHERE'])) {
+                $where = array_merge($where, $condition['WHERE']);
             } else {
-                foreach ($post['condition'] as $key => $value) {
+                $or_where = [];
+                foreach ($condition as $key => $value) {
                     if (is_array($value) && isset($value['LEFT JOIN'])) {
-                        $ljoin = $value['LEFT JOIN'];
+                        $ljoin = array_merge($ljoin, $value['LEFT JOIN']);
                     }
                     if (is_array($value) && isset($value['WHERE'])) {
-                        $where = array_merge($where, $value['WHERE']);
+                        // Combine with OR: sub-conditions target different types but must match any one of them,
+                        // and array_merge would silently produce AND instead of the required OR.
+                        $or_where[] = $value['WHERE'];
                     } elseif (!is_numeric($key) && !in_array($key, ['AND', 'OR', 'NOT']) && !str_contains($key, '.')) {
                         // Ensure condition contains table name to prevent ambiguity with fields from `glpi_entities` table
                         $where["$table.$key"] = $value;
@@ -2997,10 +3006,13 @@ HTML;
                         // Prevent overriding criteria groups sharing the same key
                         $where[] = [$key => $value];
                     } else {
-                        // Keep the criteria key at the rrot level to be able to override defaults.
+                        // Keep the criteria key at the root level to be able to override defaults.
                         // e.g. to override the default `is_template` / `is_deleted` filtering.
                         $where[$key] = $value;
                     }
+                }
+                if ($or_where !== []) {
+                    $where[] = ['OR' => $or_where];
                 }
             }
         }
@@ -3031,8 +3043,10 @@ HTML;
                             "$table.completename" => ['LIKE', $search],
                         ],
                     ];
-                    if ($item->isField('code')) {
-                        $swhere["OR"]["$table.code"] = ['LIKE', $search];
+                    if (Session::getCurrentInterface() === 'central') {
+                        if ($item->isField('code')) {
+                            $swhere["OR"]["$table.code"] = ['LIKE', $search];
+                        }
                     }
                     if ($item->isField('alias')) {
                         $swhere["OR"]["$table.alias"] = ['LIKE', $search];
@@ -3346,9 +3360,9 @@ HTML;
                             $outputval = $data['alias'];
                             $title     = $data['alias'];
                         }
-                        if (isset($data['code']) && !empty($data['code'])) {
+                        if ((Session::getCurrentInterface() === 'central') && !empty($data['code'])) {
                             $outputval .= ' - ' . $data['code'];
-                            $title     .= ' - ' . $data['code'];
+                            $title .= ' - ' . $data['code'];
                         }
 
                         $selection_text = $title;
@@ -3587,11 +3601,11 @@ HTML;
                     $itemtype_class = $post['itemtype'];
                     if (!Session::haveRight($itemtype_class::$rightname, $itemtype_class::READALL)) {
                         $unused_ref = [];
-                        $joins_str = Search::addDefaultJoin($itemtype_class, $itemtype_class::getTable(), $unused_ref);
-                        if (!empty($joins_str)) {
-                            $criteria['LEFT JOIN'] = [new QueryExpression($joins_str)];
+                        $default_join = SQLProvider::getDefaultJoinCriteria($itemtype_class, $itemtype_class::getTable(), $unused_ref);
+                        if ($default_join !== []) {
+                            $criteria = array_merge_recursive($criteria, $ljoin, $default_join);
                         }
-                        $where[] = new QueryExpression(Search::addDefaultWhere($itemtype_class));
+                        $where[] = SQLProvider::getDefaultWhereCriteria($itemtype_class);
                     }
                     break;
 
@@ -3626,6 +3640,11 @@ HTML;
             );
 
             $order_field = "$table.$field";
+            if (in_array($post['itemtype'], [Ticket::class, Change::class, Problem::class], true)) {
+                // Ordering by `name` forces a filesort over the whole (unindexable, `LIKE`-filtered)
+                // matching set; ordering by the primary key lets MySQL stop scanning early instead.
+                $order_field = "$table.id DESC";
+            }
             if (isset($post['order']) && !empty($post['order'])) {
                 $order_field = $post['order'];
             }
@@ -3849,7 +3868,7 @@ HTML;
                 $multi = true;
             }
         } else {
-            $where += getEntitiesRestrictCriteria($table, '', $_SESSION['glpiactiveentities'], $multi);
+            $where += getEntitiesRestrictCriteria($table, '', '', $multi);
             if (count($_SESSION['glpiactiveentities']) > 1) {
                 $multi = true;
             }
@@ -4184,6 +4203,7 @@ HTML;
         }
 
         $all_devices = [];
+        $found_items = [];
 
         // My items
         foreach ($CFG_GLPI["linkuser_types"] as $itemtype) {
@@ -4252,12 +4272,14 @@ HTML;
 
                         if (!isset($all_devices[$itemtype])) {
                             $all_devices[$itemtype] = [
+                                //TRANS: Always a plural form: My computers, My monitors
                                 'text' => sprintf(__('My %s'), $item->getTypeName(Session::getPluralNumber())),
                                 'children' => [],
                                 'itemtype' => $itemtype,
                             ];
                         }
 
+                        $found_items[$itemtype][] = $data['id'];
                         $all_devices[$itemtype]['children'][] = [
                             'id' => $itemtype . "_" . $data["id"],
                             'text' => $output,
@@ -4327,6 +4349,10 @@ HTML;
                             'GROUPBY' => $itemtable . '.id',
                             'ORDER'  => $item->getNameField(),
                         ];
+
+                        if (!empty($found_items[$itemtype])) {
+                            $criteria['WHERE'][] = ['NOT' => ["$itemtable.id" => $found_items[$itemtype]]];
+                        }
 
                         if ($item->maybeDeleted()) {
                             $criteria['WHERE']['is_deleted'] = 0;
@@ -5157,5 +5183,48 @@ HTML;
         }
 
         return $durationDropdown;
+    }
+
+    /**
+     * Compute the list of additional fields to display alongside item names in dropdowns.
+     *
+     * @param string|null $itemtype The itemtype to compute displaywith for.
+     * @return array<string>
+     */
+    public static function getDisplayWith(?string $itemtype): array
+    {
+        global $CFG_GLPI;
+
+        if ($itemtype === null || $itemtype === '0') {
+            return [];
+        }
+
+        $displaywith = [];
+        $is_itil_type = in_array($itemtype, $CFG_GLPI['itil_types']);
+        $id_already_visible = isset($_SESSION['glpiis_ids_visible']) && $_SESSION['glpiis_ids_visible'];
+
+        if ($is_itil_type && !$id_already_visible) {
+            $displaywith[] = 'id';
+        }
+
+        if (in_array($itemtype, $CFG_GLPI['asset_types'])) {
+            $item = getItemForItemtype($itemtype);
+            if ($item) {
+                if ($item->isField('contact')) {
+                    $displaywith[] = 'contact';
+                }
+                if ($item->isField('serial')) {
+                    $displaywith[] = 'serial';
+                }
+                if ($item->isField('otherserial')) {
+                    $displaywith[] = 'otherserial';
+                }
+                if ($item->isField('users_id')) {
+                    $displaywith[] = 'users_id';
+                }
+            }
+        }
+
+        return $displaywith;
     }
 }

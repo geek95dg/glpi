@@ -38,12 +38,14 @@ use CommonITILObject;
 use Contract;
 use ContractType;
 use Entity;
+use Glpi\Tests\RuleBuilder;
 use Glpi\Tests\RuleCommonITILObjectTest;
 use ITILCategory;
 use ITILFollowup;
 use ITILFollowupTemplate;
 use Location;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use Rule;
 use RuleAction;
 use RuleCriteria;
@@ -661,15 +663,15 @@ class RuleTicketTest extends RuleCommonITILObjectTest
 
         // create users
         $user = new \User();
-        $manager_id = $user->add([
+        $manager_id = $this->createItem(\User::class, [
             'name' => 'test manager',
-        ]);
-        $this->assertGreaterThan(0, $manager_id);
-        $user_id = $user->add([
+            '_profiles_id' => getItemByTypeName('Profile', 'Observer', true),
+            '_entities_id' => 0,
+        ])->getID();
+        $user_id = $this->createItem(\User::class, [
             'name' => 'test user',
             'users_id_supervisor' => $manager_id,
-        ]);
-        $this->assertGreaterThan(0, $user_id);
+        ])->getID();
 
         // check manager
         $user->getFromDB($user_id);
@@ -717,11 +719,68 @@ class RuleTicketTest extends RuleCommonITILObjectTest
         ]);
         $this->assertGreaterThan(0, $tickets_id);
 
+        //Must ensure the rule will be applied with _users_id_requester being both an int and an array
+        $tickets_id_2 = $ticket->add([
+            'name'    => 'test manager number 2',
+            'content' => 'test manager number 2',
+            '_users_id_requester' => $user_id,
+        ]);
+        $this->assertGreaterThan(0, $tickets_id_2);
+
         // check manager
         $ticket_user = new \Ticket_User();
         $this->assertTrue(
             $ticket_user->getFromDBByCrit([
                 'tickets_id'    => $tickets_id,
+                'users_id'      => $manager_id,
+                'type'          => \CommonITILActor::OBSERVER,
+            ])
+        );
+
+        $this->assertTrue(
+            $ticket_user->getFromDBByCrit([
+                'tickets_id'    => $tickets_id_2,
+                'users_id'      => $manager_id,
+                'type'          => \CommonITILActor::OBSERVER,
+            ])
+        );
+
+        // Now check with add action type
+        $ruleaction->delete(['id' => $action_id]);
+        $action_id_2 = $ruleaction->add($action_input = [
+            'rules_id'    => $ruletid,
+            'action_type' => 'append',
+            'field'       => '_users_id_observer',
+            'value'       => 'requester_manager',
+        ]);
+        $this->checkInput($ruleaction, $action_id_2, $action_input);
+
+        $tickets_id_3 = $ticket->add([
+            'name'    => 'test manager number 3',
+            'content' => 'test manager number 3',
+            '_users_id_requester' => $user_id,
+        ]);
+        $this->assertGreaterThan(0, $tickets_id_3);
+
+        $tickets_id_4 = $ticket->add([
+            'name'    => 'test manager number 4',
+            'content' => 'test manager number 4',
+            '_users_id_requester' => [$user_id],
+        ]);
+        $this->assertGreaterThan(0, $tickets_id_4);
+
+        // check manager
+        $this->assertTrue(
+            $ticket_user->getFromDBByCrit([
+                'tickets_id'    => $tickets_id_3,
+                'users_id'      => $manager_id,
+                'type'          => \CommonITILActor::OBSERVER,
+            ])
+        );
+
+        $this->assertTrue(
+            $ticket_user->getFromDBByCrit([
+                'tickets_id'    => $tickets_id_4,
                 'users_id'      => $manager_id,
                 'type'          => \CommonITILActor::OBSERVER,
             ])
@@ -945,11 +1004,11 @@ class RuleTicketTest extends RuleCommonITILObjectTest
         );
 
         // Add user to ticket
-        $user = new \User();
-        $user_id = $user->add([
-            'name' => 'test',
-        ]);
-        $this->assertGreaterThan(0, $user_id);
+        $user_id = $this->createItem(\User::class, [
+            'name'        => 'test',
+            '_profiles_id' => getItemByTypeName('Profile', 'Self-Service', true),
+            '_entities_id' => 0,
+        ])->getID();
 
         $ticket->update([
             'id'                  => $ticket_id,
@@ -1606,5 +1665,47 @@ class RuleTicketTest extends RuleCommonITILObjectTest
 
         // Check that ticket status is closed
         $this->assertEquals(CommonITILObject::CLOSED, $ticket->fields['status']);
+    }
+
+    /**
+     * Test the "delete" action on time_to_resolve and other sla/ola fields, see php attributes
+     * This action allows to clear (a manually set) time_to_resolve (etc.) field via a rule.
+     *
+     * Tickets' Urgency used to test rule
+     */
+    #[TestWith(['field' => 'time_to_resolve'])] // $field is both the rule action field and the ticket field.
+    #[TestWith(['field' => 'time_to_own'])]
+    #[TestWith(['field' => 'internal_time_to_resolve'])] // to remove when PR is merged - https://github.com/glpi-project/glpi/pull/19593
+    #[TestWith(['field' => 'internal_time_to_own'])] // to remove when PR is merged - https://github.com/glpi-project/glpi/pull/19593
+    public function testDeleteLevelAgreementValuesAction(string $field): void
+    {
+        $this->login();
+
+        // --- arrange ---
+        // Create a rule that deletes $field when urgency is 5
+        $rule_builder = new RuleBuilder('Test delete time_to_resolve', \RuleTicket::class);
+        $rule_builder
+            ->setCondtion(\RuleTicket::ONUPDATE)
+            ->addCriteria('urgency', Rule::PATTERN_IS, 5)
+            ->addAction('delete', $field, 1);
+        $this->createRule($rule_builder);
+
+        // Create a ticket with a manually set $field and urgency to 3
+        $manual_due_date = date('Y-m-d H:i:s', strtotime('+2 days'));
+        $ticket = $this->createItem(
+            Ticket::class,
+            [
+                $field => $manual_due_date,
+                'urgency' => 3,]
+            + $this->getMinimalCreationInput(Ticket::class)
+        );
+
+        // --- act : update ticket to trigger rule ---
+        $ticket = $this->updateItem(Ticket::class, $ticket->getID(), [
+            'urgency' => 5, // Set urgency to trigger the rule
+        ]);
+
+        // --- assert rule action applied ---
+        $this->assertNull($ticket->fields[$field]);
     }
 }

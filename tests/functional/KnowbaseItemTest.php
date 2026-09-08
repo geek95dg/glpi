@@ -39,6 +39,12 @@ use Glpi\Tests\DbTestCase;
 use KnowbaseItem_User;
 use PHPUnit\Framework\Attributes\DataProvider;
 
+use function Safe\file_get_contents;
+use function Safe\file_put_contents;
+use function Safe\ob_end_clean;
+use function Safe\ob_get_clean;
+use function Safe\ob_start;
+
 /* Test for inc/knowbaseitem.class.php */
 
 class KnowbaseItemTest extends DbTestCase
@@ -327,6 +333,52 @@ HTML,
             'items_id' => $instance->getID(),
         ]);
         $this->assertEquals(2, $count);
+    }
+
+    /**
+     * The attached documents table must render the Heading cell for each row.
+     */
+    public function testShowFullAttachmentsColumnsAlignment(): void
+    {
+        $this->login();
+        $entity_id = (int) getItemByTypeName('Entity', '_test_root_entity', true);
+        $this->setEntity('_test_root_entity', true);
+
+        $category = $this->createItem(\DocumentCategory::class, [
+            'name' => __FUNCTION__ . ' heading',
+        ]);
+
+        $kbitem = $this->createItem(\KnowbaseItem::class, [
+            'name'   => __FUNCTION__,
+            'answer' => __FUNCTION__,
+        ]);
+        $this->createItem(\Entity_KnowbaseItem::class, [
+            'knowbaseitems_id' => $kbitem->getID(),
+            'entities_id'      => $entity_id,
+            'is_recursive'     => 1,
+        ]);
+
+        $document = $this->createItem(\Document::class, [
+            'name'                  => __FUNCTION__ . ' document',
+            'entities_id'           => $entity_id,
+            'documentcategories_id' => $category->getID(),
+        ]);
+        $this->createItem(\Document_Item::class, [
+            'documents_id' => $document->getID(),
+            'itemtype'     => \KnowbaseItem::class,
+            'items_id'     => $kbitem->getID(),
+        ]);
+
+        $this->assertTrue($kbitem->getFromDB($kbitem->getID()));
+        $html = $kbitem->showFull(['display' => false]);
+
+        $this->assertSame(
+            1,
+            preg_match_all(
+                '#<td[^>]*>(?:(?!</td>).)*?' . preg_quote(__FUNCTION__ . ' heading', '#') . '(?:(?!</td>).)*?</td>#s',
+                $html
+            )
+        );
     }
 
     public function testGetForCategory()
@@ -1223,6 +1275,7 @@ HTML,
     protected function testGetVisibilityCriteriaProvider_KB(): iterable
     {
         // Create set of test subjects
+        $this->login();
         $glpi_user = getItemByTypeName("User", "glpi", true);
         $tech_user = getItemByTypeName("User", "tech", true);
         $this->createItems("KnowbaseItem", [
@@ -1352,6 +1405,38 @@ HTML,
             ],
         ]);
 
+        // Create KnowBase items with specific visibility for users
+        $this->createItems(\KnowbaseItem::class, [
+            [
+                'name'     => 'KB 14',
+                'answer'   => 'KB 14',
+                'is_faq'   => false,
+                'users_id' => $glpi_user,
+                'entities_id' => 0,
+                'is_recursive' => 1,
+                '_visibility' => [
+                    'entities_id' => -1,
+                    'is_recursive' => 1,
+                    '_type' => \User::class,
+                    'users_id' => $tech_user,
+                ],
+            ],
+            [
+                'name'     => 'KB 15',
+                'answer'   => 'KB 15',
+                'is_faq'   => false,
+                'users_id' => $glpi_user,
+                'entities_id' => 0,
+                'is_recursive' => 1,
+                '_visibility' => [
+                    'entities_id' => -1,
+                    'is_recursive' => 1,
+                    '_type' => \User::class,
+                    'users_id' => $normal_user,
+                ],
+            ],
+        ]);
+
         // Add group restrictions for articles 4 to 7
         $kb_4 = getItemByTypeName("KnowbaseItem", "KB 4", true);
         $kb_5 = getItemByTypeName("KnowbaseItem", "KB 5", true);
@@ -1397,6 +1482,38 @@ HTML,
             ],
         ]);
 
+        // Create KnowBase items with specific visibility for groups
+        $this->createItems(\KnowbaseItem::class, [
+            [
+                'name'     => 'KB 16',
+                'answer'   => 'KB 16',
+                'is_faq'   => false,
+                'users_id' => $glpi_user,
+                'entities_id' => 0,
+                'is_recursive' => 1,
+                '_visibility' => [
+                    'entities_id' => -1,
+                    'is_recursive' => 1,
+                    '_type' => \Group::class,
+                    'groups_id' => $group_a,
+                ],
+            ],
+            [
+                'name'     => 'KB 17',
+                'answer'   => 'KB 17',
+                'is_faq'   => false,
+                'users_id' => $glpi_user,
+                'entities_id' => 0,
+                'is_recursive' => 1,
+                '_visibility' => [
+                    'entities_id' => -1,
+                    'is_recursive' => 1,
+                    '_type' => \Group::class,
+                    'groups_id' => $group_b,
+                ],
+            ],
+        ]);
+
         // Add profiles restrictions for article 8 to 11
         $kb_8 = getItemByTypeName("KnowbaseItem", "KB 8", true);
         $kb_9 = getItemByTypeName("KnowbaseItem", "KB 9", true);
@@ -1433,6 +1550,38 @@ HTML,
             ],
         ]);
 
+        // Create KnowBase items with specific visibility for profiles
+        $this->createItems(\KnowbaseItem::class, [
+            [
+                'name'     => 'KB 18',
+                'answer'   => 'KB 18',
+                'is_faq'   => false,
+                'users_id' => $glpi_user,
+                'entities_id' => 0,
+                'is_recursive' => 1,
+                '_visibility' => [
+                    'entities_id' => -1,
+                    'is_recursive' => 1,
+                    '_type' => \Profile::class,
+                    'profiles_id' => getItemByTypeName("Profile", "Technician", true),
+                ],
+            ],
+            [
+                'name'     => 'KB 19',
+                'answer'   => 'KB 19',
+                'is_faq'   => false,
+                'users_id' => $glpi_user,
+                'entities_id' => 0,
+                'is_recursive' => 1,
+                '_visibility' => [
+                    'entities_id' => -1,
+                    'is_recursive' => 1,
+                    '_type' => \Profile::class,
+                    'profiles_id' => getItemByTypeName("Profile", "Hotliner", true),
+                ],
+            ],
+        ]);
+
         // Add entity restriction for articles 12 and 13
         $kb_12 = getItemByTypeName("KnowbaseItem", "KB 12", true);
         $kb_13 = getItemByTypeName("KnowbaseItem", "KB 13", true);
@@ -1454,7 +1603,7 @@ HTML,
         yield [
             'articles' => [
                 'FAQ 2', 'KB 2', 'KB 3', 'KB 4', 'KB 6', 'KB 7', 'KB 8', 'KB 9',
-                'KB 10', 'KB 12', 'KB 13',
+                'KB 10', 'KB 12', 'KB 13', 'KB 14', 'KB 16', 'KB 18',
             ],
         ];
 
@@ -1463,6 +1612,7 @@ HTML,
         yield [
             'articles' => [
                 'FAQ 2', 'KB 2', 'KB 3', 'KB 4', 'KB 7', 'KB 8', 'KB 10', 'KB 12',
+                'KB 14', 'KB 16', 'KB 18',
             ],
         ];
 
@@ -1472,7 +1622,8 @@ HTML,
             'articles' => [
                 'FAQ 1', 'FAQ 2', 'FAQ 3', 'KB 1', 'KB 2', 'KB 3', 'KB 4',
                 'KB 5', 'KB 6', 'KB 7', 'KB 8', 'KB 9', 'KB 10', 'KB 11',
-                'KB 12', 'KB 13',
+                'KB 12', 'KB 13', 'KB 14', 'KB 15', 'KB 16', 'KB 17',
+                'KB 18', 'KB 19',
             ],
         ];
     }
@@ -1515,6 +1666,7 @@ HTML,
                 'as_map'       => 0,
                 'browse'       => 0,
                 'unpublished'  => 1,
+                'export_all'   => 1,
             ];
             ob_start();
             \Search::showList('KnowbaseItem', $params);
@@ -1747,5 +1899,173 @@ HTML,
             'users_id'         => $tech_user,
         ]);
         $this->assertTrue($fn_can_tech_see_kb());
+    }
+
+    public function testRelinkEmbeddedDocumentsFromTicketSolution(): void
+    {
+        $this->login();
+
+        $ticket = $this->createItem(\Ticket::class, [
+            'name'    => __FUNCTION__,
+            'content' => __FUNCTION__,
+        ]);
+
+        $document = $this->createItem(\Document::class, [
+            'name'     => __FUNCTION__,
+            'filename' => 'test.txt',
+        ]);
+
+        $this->createItem(\Document_Item::class, [
+            'documents_id' => $document->getID(),
+            'itemtype'     => \Ticket::class,
+            'items_id'     => $ticket->getID(),
+        ]);
+
+        $doc_url = '/front/document.send.php?docid=' . $document->getID()
+            . '&amp;itemtype=Ticket&amp;items_id=' . $ticket->getID();
+
+        $kb = $this->createItem(\KnowbaseItem::class, [
+            'name'       => __FUNCTION__,
+            'answer'     => '<p><a href="' . $doc_url . '">doc</a></p>',
+            'is_faq'     => 0,
+            'users_id'   => \Session::getLoginUserID(),
+            '_itemtype'  => \Ticket::class,
+            '_items_id'  => $ticket->getID(),
+            '_do_item_link' => false,
+        ], ['answer']);
+
+        $this->assertTrue($kb->getFromDB($kb->getID()));
+
+        $this->assertStringContainsString('itemtype=KnowbaseItem', $kb->fields['answer']);
+        $this->assertStringContainsString('items_id=' . $kb->getID(), $kb->fields['answer']);
+        $this->assertStringNotContainsString('itemtype=Ticket', $kb->fields['answer']);
+
+        $this->assertEquals(
+            1,
+            countElementsInTable(\Document_Item::getTable(), [
+                'documents_id' => $document->getID(),
+                'itemtype'     => \KnowbaseItem::class,
+                'items_id'     => $kb->getID(),
+            ])
+        );
+    }
+
+    public function testRelinkEmbeddedDocumentsBlockedWithoutSourceAccess(): void
+    {
+        $this->login();
+
+        $ticket = $this->createItem(\Ticket::class, [
+            'name'    => __FUNCTION__,
+            'content' => __FUNCTION__,
+        ]);
+
+        $document = $this->createItem(\Document::class, [
+            'name'     => __FUNCTION__,
+            'filename' => 'test.txt',
+        ]);
+
+        $this->createItem(\Document_Item::class, [
+            'documents_id' => $document->getID(),
+            'itemtype'     => \Ticket::class,
+            'items_id'     => $ticket->getID(),
+        ]);
+
+        $profile = $this->createItem(\Profile::class, [
+            'name'      => __FUNCTION__,
+            'interface' => 'central',
+            'knowbase'  => \KnowbaseItem::PUBLISHFAQ | CREATE,
+            'ticket'    => 0,
+        ]);
+
+        $user = $this->createItem(\User::class, [
+            'name'         => __FUNCTION__,
+            'password'     => 'testpassword',
+            'password2'    => 'testpassword',
+            '_profiles_id' => $profile->getID(),
+            '_entities_id' => 0,
+        ], ['password', 'password2']);
+
+        $this->login($user->fields['name'], 'testpassword');
+
+        $doc_url = '/front/document.send.php?docid=' . $document->getID()
+            . '&amp;itemtype=Ticket&amp;items_id=' . $ticket->getID();
+
+        $kb = $this->createItem(\KnowbaseItem::class, [
+            'name'          => __FUNCTION__,
+            'answer'        => '<p><a href="' . $doc_url . '">doc</a></p>',
+            'is_faq'        => 1,
+            'users_id'      => $user->getID(),
+            '_itemtype'     => \Ticket::class,
+            '_items_id'     => $ticket->getID(),
+            '_do_item_link' => false,
+        ], ['answer']);
+
+        $this->assertTrue($kb->getFromDB($kb->getID()));
+
+        $this->assertStringNotContainsString('itemtype=KnowbaseItem', $kb->fields['answer']);
+        $this->assertStringContainsString('itemtype=Ticket', $kb->fields['answer']);
+
+        $this->assertEquals(
+            0,
+            countElementsInTable(\Document_Item::getTable(), [
+                'documents_id' => $document->getID(),
+                'itemtype'     => \KnowbaseItem::class,
+                'items_id'     => $kb->getID(),
+            ])
+        );
+    }
+
+    public function testGetServiceCatalogItemDescriptionWithDescriptionSet(): void
+    {
+        $this->login();
+
+        $kb = $this->createItem(\KnowbaseItem::class, [
+            'name'        => __FUNCTION__,
+            'answer'      => '<h1>Full procedure</h1><p>' . str_repeat('Lorem ipsum dolor sit amet. ', 30) . '</p>',
+            'description' => 'A short description for the tile',
+            'is_faq'      => 1,
+        ]);
+
+        $this->assertEquals(
+            'A short description for the tile',
+            $kb->getServiceCatalogItemDescription()
+        );
+    }
+
+    public function testGetServiceCatalogItemDescriptionFallsBackToAnswerExcerpt(): void
+    {
+        $this->login();
+
+        $kb = $this->createItem(\KnowbaseItem::class, [
+            'name'   => __FUNCTION__,
+            'answer' => '<h1>PROCESS</h1><p>Screenshot on an Android smartphone</p>'
+                . '<img src="https://example.org/screenshot.png">'
+                . '<p>' . str_repeat('Lorem ipsum dolor sit amet. ', 30) . '</p>',
+            'is_faq' => 1,
+        ]);
+
+        $description = $kb->getServiceCatalogItemDescription();
+
+        // No raw HTML leaking into the tile.
+        $this->assertStringNotContainsString('<h1>', $description);
+        $this->assertStringNotContainsString('<img', $description);
+        $this->assertStringNotContainsString('<p>', $description);
+
+        // Truncated to a fixed length.
+        $this->assertLessThanOrEqual(200 + mb_strlen('&nbsp;(...)'), mb_strlen($description));
+        $this->assertStringEndsWith('&nbsp;(...)', $description);
+    }
+
+    public function testGetServiceCatalogItemDescriptionFallsBackToShortAnswer(): void
+    {
+        $this->login();
+
+        $kb = $this->createItem(\KnowbaseItem::class, [
+            'name'   => __FUNCTION__,
+            'answer' => '<p>Short answer</p>',
+            'is_faq' => 1,
+        ]);
+
+        $this->assertEquals('Short answer', $kb->getServiceCatalogItemDescription());
     }
 }

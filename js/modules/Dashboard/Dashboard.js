@@ -33,7 +33,7 @@
 
 /* eslint prefer-template: 0 */
 /* global GridStack, GoInFullscreen, GoOutFullscreen, EasyMDE, getUuidV4, _, sortable */
-/* global glpi_ajax_dialog, glpi_close_all_dialogs */
+/* global glpi_ajax_dialog, glpi_close_all_dialogs, glpi_toast_info, glpi_toast_error */
 
 window.GLPI = window.GLPI || {};
 window.GLPI.Dashboard = {
@@ -70,9 +70,12 @@ window.GLPI.Dashboard = {
  * @property {string|null} [token] Token
  * @property {number|null} [entities_id] Entities ID
  * @property {number|boolean|null} [is_recursive] Recursive
+ * @property {number|null} [profiles_id] Profile ID of the user who shared the dashboard
+ * @property {number|null} [users_id] User ID of the user who shared the dashboard
  * @property {{}[]} [all_cards] All cards
  * @property {string} [context] Dashboard context
  * @property {string} [current] Current dashboard
+ * @property {boolean} [mini] Whether the dashboard is in mini mode (for ticket search page)
  */
 
 class GLPIDashboard {
@@ -102,6 +105,7 @@ class GLPIDashboard {
         this.cache_key = "";
         this.filters = "{}";
         this.filters_selector = "";
+        this._filters_cache = null;
 
         GridStack.renderCB = (el, w) => {
             el.parentElement.innerHTML = w.content;
@@ -120,6 +124,8 @@ class GLPIDashboard {
             token:       null,
             entities_id: null,
             is_recursive:null,
+            profiles_id: null,
+            users_id:    null,
             ajax_cards:  true,
             all_cards:   [],
             context:     "core"
@@ -130,11 +136,13 @@ class GLPIDashboard {
         this.elem_id      = "#dashboard-" + this.rand;
         this.element      = $(this.elem_id);
         this.elem_dom     = this.element[0];
-        this.current_name = $(`${this.elem_id} .dashboard-select`).val() || options.current;
+        this.current_name = $(`${this.elem_id} .dashboard_select`).val() || options.current;
         this.embed        = options.embed;
         this.token        = options.token;
         this.entities_id  = options.entities_id;
         this.is_recursive = options.is_recursive;
+        this.profiles_id  = options.profiles_id;
+        this.users_id     = options.users_id;
         this.ajax_cards   = options.ajax_cards;
         this.all_cards    = options.all_cards;
         this.all_widgets  = options.all_widgets;
@@ -149,7 +157,7 @@ class GLPIDashboard {
         const elem_domRect = this.elem_dom.getBoundingClientRect();
         const width_offset = elem_domRect.left + (window.innerWidth - elem_domRect.right) + 0.02;
 
-        this.grid = GridStack.init({
+        const gridstack_options = {
             column: options.cols,
             maxRow: (options.rows + 1), // +1 for a hidden item at bottom (to fix height)
             margin : this.cell_margin,
@@ -158,13 +166,23 @@ class GLPIDashboard {
             draggable: { // override jquery ui draggable options
                 'cancel': 'textarea' // avoid draggable on some child elements
             },
-            'minWidth': 768 -  width_offset, // breakpoint of one column mode (based on the dashboard container width), trying to reduce to match the `-md` breakpoint of bootstrap (this last is based on viewport width)
-        }, `#grid-stack-${options.rand}`);
+            // columnOpts is intentionally NOT used: GridStack v12 triggers GridStackEngine._fixCollisions
+            // during the column change, which causes infinite recursion (moveNode <-> _fixCollisions)
+            // when float:true is enabled. Mobile layout is managed manually via this.switchColumnLayout().
+        };
+        this.grid = GridStack.init(gridstack_options, `#grid-stack-${options.rand}`);
 
         // set grid in static to prevent edition (unless user click on edit button)
         // previously in option, but current version of gridstack has a bug with one column mode (responsive)
         // see https://github.com/gridstack/gridstack.js/issues/1229
         this.grid.setStatic(true);
+
+        this.mobile_threshold = Math.round(768 - width_offset);
+
+        // Apply mobile layout if needed on initial load
+        window.requestAnimationFrame(() => {
+            this.switchColumnLayout(options.cols);
+        });
 
         // set the width of the select box to match the selected option
         this.resizeSelect();
@@ -292,6 +310,8 @@ class GLPIDashboard {
 
             window.clearTimeout(debounce);
             debounce = window.setTimeout(() => {
+                this.switchColumnLayout(this.cols);
+
                 // fit again numbers
                 this.fitNumbers();
             }, 200);
@@ -456,6 +476,41 @@ class GLPIDashboard {
                 .addClass('success')
                 .text(_.unescape(__("Saved")))
                 .show('fade').delay(2000).hide('fade');
+        });
+
+        // reset dashboard
+        $(document).on('click', 'button.reset-dashboard ', (event) => {
+            event.preventDefault();
+            this.resetDashboard();
+        });
+        $(document).on('click', 'button[name="confirm-reset-dashboard"]', (event) => {
+            event.preventDefault();
+            const btn = $(event.target);
+            const selected_dashboard = btn
+                .closest('.dashboard-reset-container')
+                .find('select[name="default_dashboard_key"]');
+            $.ajax({
+                url: CFG_GLPI.root_doc+"/ajax/dashboard.php",
+                method: 'POST',
+                data: {
+                    action: 'reset',
+                    dashboard: this.current_name,
+                    default_dashboard_key: selected_dashboard.val(),
+                }
+            }).then(() => {
+                glpi_toast_info(__('Dashboard has been reset to default'));
+                if (window.reloadTab !== undefined) {
+                    window.glpi_close_all_dialogs();
+                    window.reloadTab();
+                } else {
+                    this.initFilters();
+                    this.refreshDashboard();
+                    window.glpi_close_all_dialogs();
+                }
+            }, () => {
+                glpi_toast_error(__('An error occurred while resetting the dashboard'));
+                glpi_close_all_dialogs();
+            });
         });
 
         // display widget types after selecting a card
@@ -672,6 +727,9 @@ class GLPIDashboard {
 
     refreshDashboard() {
         const gridstack = $(this.elem_id+" .grid-stack");
+        document.querySelectorAll('div[_echarts_instance_]').forEach((el) => {
+            window.echarts.getInstanceByDom(el)?.dispose();
+        });
         this.grid.removeAll();
 
         const data = {
@@ -683,6 +741,8 @@ class GLPIDashboard {
             data.token        = this.token;
             data.entities_id  = this.entities_id;
             data.is_recursive = this.is_recursive;
+            data.profiles_id  = this.profiles_id;
+            data.users_id     = this.users_id;
         }
 
         $.get({
@@ -782,6 +842,17 @@ class GLPIDashboard {
         });
     }
 
+    resetDashboard() {
+        glpi_ajax_dialog({
+            title: __("Reset to default"),
+            url: `${CFG_GLPI.root_doc}/ajax/dashboard.php`,
+            params: {
+                action: 'prepare_reset',
+                dashboard: this.current_name,
+            }
+        });
+    }
+
     /**
      * FitText() only use the width of an item into consideration (and ignore the height).
      * This means that if you keep increasing the width of a card without also
@@ -823,6 +894,39 @@ class GLPIDashboard {
     }
 
     /**
+     * Switch between single-column (mobile) and multi-column (desktop) layout depending on the
+     * current grid container width vs the mobile threshold.
+     *
+     * GridStack v12 columnOpts triggers GridStackEngine._fixCollisions during column changes.
+     * With float:true enabled, this causes infinite recursion (moveNode <-> _fixCollisions).
+     * To prevent this, float is temporarily disabled during the column switch (pushing items
+     * down deterministically terminates), then restored afterwards.
+     *
+     * @param {number} desktop_cols - the original number of columns to restore on desktop
+     */
+    switchColumnLayout(desktop_cols) {
+        if (typeof this.grid?.getColumn !== 'function') {
+            return;
+        }
+
+        const grid_width = (this.grid.el?.clientWidth) || this.elem_dom.clientWidth;
+        const is_mobile  = grid_width > 0 && grid_width <= this.mobile_threshold;
+        const current    = this.grid.getColumn();
+
+        if (is_mobile && current !== 1) {
+            this.grid.float(false);
+            this.grid.column(1, 'compact');
+            this.grid.float(true);
+            this.grid.cellHeight(60, false);
+        } else if (!is_mobile && current === 1) {
+            this.grid.float(false);
+            this.grid.column(desktop_cols, 'moveScale');
+            this.grid.float(true);
+            this.grid.cellHeight('auto', false);
+        }
+    }
+
+    /**
      * Remove the custom width as it should only be used temporarily to 'trick'
      * fitText into using a different fontSize and should not be applied to the
      * actual text
@@ -842,7 +946,7 @@ class GLPIDashboard {
 
         // responsive mode
         if (this.dash_width <= 700
-            || $(this.grid.el).hasClass('grid-stack-one-column-mode')) {
+            || $(this.grid.el).hasClass('gs-1')) {
             text_offset = 1.8;
         }
 
@@ -1093,6 +1197,8 @@ class GLPIDashboard {
                     data.token        = this.token;
                     data.entities_id  = this.entities_id;
                     data.is_recursive = this.is_recursive;
+                    data.profiles_id  = this.profiles_id;
+                    data.users_id     = this.users_id;
                 }
 
                 promises.push($.get(CFG_GLPI.root_doc+"/ajax/dashboard.php", data).then((html) => {
@@ -1120,6 +1226,8 @@ class GLPIDashboard {
                 data.token        = this.token;
                 data.entities_id  = this.entities_id;
                 data.is_recursive = this.is_recursive;
+                data.profiles_id  = this.profiles_id;
+                data.users_id     = this.users_id;
             }
 
             return $.ajax({
@@ -1215,6 +1323,12 @@ class GLPIDashboard {
             return [];
         }
 
+        if (this._filters_cache !== null) {
+            // Avoid a synchronous round trip to the server on every call, several of which
+            // happen on a single dashboard load (init, refresh, filter changes...).
+            return this._filters_cache;
+        }
+
         let filters;
         $.ajax({
             method: 'GET',
@@ -1229,7 +1343,9 @@ class GLPIDashboard {
             }
         });
 
-        return filters || {};
+        this._filters_cache = filters || {};
+
+        return this._filters_cache;
     }
 
     /**
@@ -1253,6 +1369,8 @@ class GLPIDashboard {
                 }),
             }
         });
+
+        this._filters_cache = sub_filters;
     }
 
     /**

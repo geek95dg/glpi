@@ -283,7 +283,7 @@ TWIG;
                     $related_object = new $default_itemtype();
                     $related_object->getFromDB($object->fields[$default_items_id]);
                     $name = htmlescape($related_object->getName());
-                    $default_object_link = "<a href='" . htmlescape($object->getLinkURL()) . "'" . $name . ">" . $name . "</a>";
+                    $default_object_link = "<a href='" . htmlescape($object->getLinkURL()) . "'>" . $name . "</a>";
                 }
 
                 $entries[] = [
@@ -1312,7 +1312,7 @@ TWIG);
 
         if (
             Session::haveRight($itemtype::$rightname, UPDATE)
-            && in_array($itemtype, $CFG_GLPI['inventory_types'] + $CFG_GLPI['inventory_lockable_objects'], true)
+            && in_array($itemtype, array_merge($CFG_GLPI['inventory_types'], $CFG_GLPI['inventory_lockable_objects']), true)
         ) {
             $actions[$action_unlock_component] = __s('Unlock components');
             $actions[$action_unlock_fields] = __s('Unlock fields');

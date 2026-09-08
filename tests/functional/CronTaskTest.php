@@ -278,4 +278,82 @@ class CronTaskTest extends DbTestCase
             );
         }
     }
+
+    public function testCronTaskLogDoesNotCreateHistoryOnParent(): void
+    {
+        global $DB;
+
+        $crontask = $this->createItem(\CronTask::class, [
+            'itemtype'  => \CronTask::class,
+            'name'      => 'test_no_history',
+            'frequency' => MINUTE_TIMESTAMP,
+        ]);
+
+        $log_count_before = countElementsInTable(\Log::getTable(), [
+            'itemtype' => \CronTask::class,
+            'items_id' => $crontask->getID(),
+        ]);
+
+        // Simulate what CronTask::start() and CronTask::stop() do: add CronTaskLog entries
+        $this->createItem(
+            \CronTaskLog::class,
+            [
+                'crontasks_id'    => $crontask->getID(),
+                'date'            => date('Y-m-d H:i:s'),
+                'content'         => 'Starting',
+                'crontasklogs_id' => 0,
+                'state'           => \CronTaskLog::STATE_START,
+                'volume'          => 0,
+                'elapsed'         => 0.0,
+            ]
+        );
+        $this->createItem(
+            \CronTaskLog::class,
+            [
+                'crontasks_id'    => $crontask->getID(),
+                'date'            => date('Y-m-d H:i:s'),
+                'content'         => 'Stopping',
+                'crontasklogs_id' => 0,
+                'state'           => \CronTaskLog::STATE_STOP,
+                'volume'          => 1,
+                'elapsed'         => 0.1,
+            ]
+        );
+
+        $log_count_after = countElementsInTable(\Log::getTable(), [
+            'itemtype' => \CronTask::class,
+            'items_id' => $crontask->getID(),
+        ]);
+
+        $this->assertSame(
+            $log_count_before,
+            $log_count_after,
+            'CronTaskLog entries must not generate history entries on the parent CronTask'
+        );
+    }
+
+    public function testDuplicateCronTaskName()
+    {
+        global $DB;
+
+        $names = [];
+        $iterator = $DB->request([
+            'SELECT' => ['itemtype', 'name'],
+            'FROM'   => \CronTask::getTable(),
+        ]);
+
+        foreach ($iterator as $row) {
+            $names[] = $row['name'];
+        }
+
+        $duplicates = array_diff_assoc($names, array_unique($names));
+
+        $this->assertEmpty(
+            $duplicates,
+            sprintf(
+                'Some cron tasks share the same name across itemtypes: %s',
+                implode(', ', array_unique($duplicates))
+            )
+        );
+    }
 }

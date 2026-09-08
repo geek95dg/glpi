@@ -50,12 +50,14 @@
    {% endif %}
    {% if has_subitems %}
    <li class="nav-item dropdown {{ firstlevel_active ? 'active' : '' }}" aria-label="{{ firstlevel['title'] }}">
-      <a class="nav-link dropdown-toggle {{ firstlevel_active ? 'active' : '' }} {{ firstlevel_shown ? 'show' : '' }}"
-         data-bs-toggle="dropdown" role="button"
+      <button type="button"
+         class="nav-link dropdown-toggle {{ firstlevel_active ? 'active' : '' }} {{ firstlevel_shown ? 'show' : '' }}"
+         data-bs-toggle="dropdown"
+         data-testid="sidebar-menu-toggle"
          aria-expanded="{{ firstlevel_shown ? 'true' : 'false' }}">
          <i class="{{ firstlevel['icon'] ?? '' }}"></i>
          <span class="menu-label">{{ firstlevel['title'] }}</span>
-      </a>
+      </button>
       <div class="dropdown-menu {{ firstlevel_active and is_vertical != false ? '' : 'animate__animated' }} {{ is_vertical ? 'animate__fadeInLeft' : 'animate__zoomIn' }} {{ firstlevel_shown ? 'show' : '' }}">
          <h6 class="dropdown-header">{{ firstlevel['title'] }}</h6>
          <div class="dropdown-menu-columns">
@@ -131,7 +133,11 @@ $(function() {
 
       // opening a sub menu close others
       menuDropdown.addEventListener('show.bs.dropdown', function (event) {
-          if ($('body').hasClass('navbar-collapsed')) {
+          // The CSS-only "flyout on hover" replacement for Bootstrap's dropdown only
+          // exists at the `lg` breakpoint and up (see _global-menu.scss, min-width:992px).
+          // Below that, the sidebar is an off-canvas mobile menu: dropdowns must stay
+          // Bootstrap-driven or they can never be opened (glpi-project/glpi#23124).
+          if ($('body').hasClass('navbar-collapsed') && window.matchMedia('(min-width: 992px)').matches) {
               // Dropdown submenus will be shown with CSS, and shouldn't be handled by Bootstrap
               event.preventDefault();
               event.stopPropagation();

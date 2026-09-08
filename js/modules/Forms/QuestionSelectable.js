@@ -130,15 +130,12 @@ export class GlpiFormQuestionTypeSelectable {
             const clone = template.content.cloneNode(true);
             const uuid = getUUID(); // Generate a new UUID to avoid duplicates
 
-            $(clone).find('input[type="text"]')
-                .val(value.value)
-                .attr('name', `options[${uuid}]`);
+            this.#setOptionUuid($(clone), uuid);
+            $(clone).find('input[type="text"]').val(value.value);
             $(clone).find(`input[type="${CSS.escape(this._inputType)}"]`)
-                .val(uuid)
                 .prop('checked', value.checked);
             $(clone).find('input[data-glpi-form-editor-question-option-order]')
-                .val(value.order)
-                .attr('name', `options_order[${uuid}]`);
+                .val(value.order);
 
             const insertedElement = $(clone).children().appendTo(this._container);
 
@@ -187,11 +184,34 @@ export class GlpiFormQuestionTypeSelectable {
         option
             .find('input[type="text"]')
             .on('input', (event) => this.#handleOptionChange(event))
-            .on('keydown', (event) => this.#handleKeydown(event));
+            .on('keydown', (event) => this.#handleKeydown(event))
+            .on('paste', (event) => this.#handlePaste(event));
 
         option
             .find('button[data-glpi-form-editor-question-option-remove]')
             .on('click', (event) => this.#removeOption(event));
+
+        // The "copy uuid" button is handled by the generic `data-glpi-clipboard-text`
+        // handler, no listener is needed here. Its value is kept in sync by
+        // `#setOptionUuid()`.
+    }
+
+    /**
+     * Assign an uuid to an option and update every input/attribute referencing it.
+     *
+     * @param {JQuery<HTMLElement>} option
+     * @param {string} uuid
+     */
+    #setOptionUuid(option, uuid) {
+        // The option may still use the input type of the template it was cloned
+        // from (which is not updated when the question switches between single
+        // and multiple mode), so both types must be targeted here.
+        option.find('input[type="radio"], input[type="checkbox"]').val(uuid);
+        option.find('input[type="text"]').attr('name', `options[${uuid}]`);
+        option.find('input[data-glpi-form-editor-question-option-order]')
+            .attr('name', `options_order[${uuid}]`);
+        option.find('[data-glpi-form-editor-question-option-copy-uuid]')
+            .attr('data-glpi-clipboard-text', uuid);
     }
 
     /**
@@ -236,10 +256,7 @@ export class GlpiFormQuestionTypeSelectable {
         }
 
         // Update the uuid with a new random value (random number like mt_rand)
-        const uuid = getUUID();
-        $(input).parent().next().find('input[type="radio"], input[type="checkbox"]').val(uuid);
-        $(input).parent().next().find('input[type="text"]').attr('name', `options[${uuid}]`);
-        $(input).parent().next().find('input[data-glpi-form-editor-question-option-order]').attr('name', `options_order[${uuid}]`);
+        this.#setOptionUuid($(input).parent().next(), getUUID());
         $(input).parent().next().find('input[data-glpi-form-editor-question-option-order]').val(this._container.children().length + 1);
 
         /**
@@ -313,6 +330,7 @@ export class GlpiFormQuestionTypeSelectable {
         $(input).siblings('input[type="radio"], input[type="checkbox"]').prop('disabled', false);
         $(input).parent().removeAttr('data-glpi-form-editor-question-extra-details');
         $(input).siblings('button[data-glpi-form-editor-question-option-remove]').removeClass('d-none');
+        $(input).siblings('button[data-glpi-form-editor-question-option-copy-uuid]').removeClass('d-none');
     }
 
     /**
@@ -398,8 +416,7 @@ export class GlpiFormQuestionTypeSelectable {
         });
 
         // Reindex the order of the empty option
-        this._container.closest('div[data-glpi-form-editor-question-type-specific]')
-            .find('div[data-glpi-form-editor-question-extra-details]')
+        this._container.siblings('div[data-glpi-form-selectable-question-option]')
             .find('input[data-glpi-form-editor-question-option-order]')
             .val(this._container.children().length);
     }
@@ -501,6 +518,52 @@ export class GlpiFormQuestionTypeSelectable {
         }
 
         // Reload sortable
+        sortable(container);
+    }
+
+    /**
+     * Handle the paste event.
+     * When pasting multi-line text, create one option per line.
+     *
+     * @param {ClipboardEvent} event - The paste event.
+     */
+    #handlePaste(event) {
+        const clipboardData = event.originalEvent.clipboardData || window.clipboardData;
+        const pastedText = clipboardData.getData('text');
+        const lines = pastedText.split(/\r?\n/).filter(line => line.trim() !== '');
+
+        // Only handle multi-line paste
+        if (lines.length <= 1) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const input = event.target;
+
+        // Set the first line as the value of the current option
+        $(input).val($(input).val() + lines[0]);
+        this.#showOption(input);
+        this.#addNewOptionIfNeeded(input);
+
+        // Create new options for the remaining lines
+        let currentInput = input;
+        for (let i = 1; i < lines.length; i++) {
+            this.#addOption(currentInput, false, true);
+            const nextInput = $(currentInput).parent().next().find('input[type="text"]').get(0);
+            $(nextInput).val(lines[i]);
+            this.#showOption(nextInput);
+            currentInput = nextInput;
+        }
+
+        // Ensure an empty option exists at the end
+        this.#addNewOptionIfNeeded(currentInput);
+
+        this.#reindexOptions();
+        this.#getFormController().computeState();
+
+        // Reload sortable
+        const container = $(input).closest('div[data-glpi-form-editor-selectable-question-options]');
         sortable(container);
     }
 }

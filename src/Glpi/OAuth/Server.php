@@ -40,6 +40,7 @@ use Glpi\Exception\OAuth2KeyException;
 use Glpi\Http\Request;
 use GLPIKey;
 use League\OAuth2\Server\AuthorizationServer;
+use League\OAuth2\Server\AuthorizationValidators\BearerTokenValidator;
 use League\OAuth2\Server\Exception\OAuthServerException;
 use League\OAuth2\Server\Grant\AuthCodeGrant;
 use League\OAuth2\Server\Grant\ClientCredentialsGrant;
@@ -60,8 +61,11 @@ use function Safe\unlink;
 
 final class Server
 {
-    private const PRIVATE_KEY_PATH = GLPI_CONFIG_DIR . '/oauth.pem';
-    private const PUBLIC_KEY_PATH  = GLPI_CONFIG_DIR . '/oauth.pub';
+    private const PRIVATE_KEY_FILENAME = 'oauth.pem';
+    private const PUBLIC_KEY_FILENAME  = 'oauth.pub';
+
+    private const PRIVATE_KEY_PATH = GLPI_CONFIG_DIR . '/' . self::PRIVATE_KEY_FILENAME;
+    private const PUBLIC_KEY_PATH  = GLPI_CONFIG_DIR . '/' . self::PUBLIC_KEY_FILENAME;
 
     /**
      * @var ClientRepository
@@ -106,7 +110,16 @@ final class Server
         $this->access_token_repository = new AccessTokenRepository();
         $this->scope_repository = new ScopeRepository();
 
-        $this->resource_server = new ResourceServer($this->access_token_repository, "file://" . self::PUBLIC_KEY_PATH);
+        $bearer_token_validator = new BearerTokenValidator(
+            accessTokenRepository: $this->access_token_repository,
+            // The JWT lib use its own system clock, which may not always be exactly
+            // equals to GLPI's time reference stored in the session.
+            // This lead to flakiness in our tests where the token is falsely
+            // identified as being from the future.
+            // To prevent this, we add a 5 second leeway.
+            jwtValidAtDateLeeway: new DateInterval('PT5S')
+        );
+        $this->resource_server = new ResourceServer($this->access_token_repository, "file://" . self::PUBLIC_KEY_PATH, $bearer_token_validator);
 
         $encryption_key = (new GLPIKey())->get();
         $this->auth_server = new AuthorizationServer($this->client_repository, $this->access_token_repository, $this->scope_repository, "file://" . self::PRIVATE_KEY_PATH, $encryption_key);
@@ -200,15 +213,18 @@ final class Server
         ];
     }
 
-    public static function checkKeys(): bool
+    public static function checkKeys(string $config_dir = GLPI_CONFIG_DIR): bool
     {
+        $private_key_path = $config_dir . '/' . self::PRIVATE_KEY_FILENAME;
+        $public_key_path  = $config_dir . '/' . self::PUBLIC_KEY_FILENAME;
+
         if (
-            file_exists(self::PRIVATE_KEY_PATH)
-            && file_exists(self::PUBLIC_KEY_PATH)
+            file_exists($private_key_path)
+            && file_exists($public_key_path)
         ) {
             // Keys are already generated
 
-            if (is_readable(self::PRIVATE_KEY_PATH) && is_readable(self::PUBLIC_KEY_PATH)) {
+            if (is_readable($private_key_path) && is_readable($public_key_path)) {
                 return true;
             } else {
                 throw new OAuth2KeyException('Either private or public OAuth keys cannot be read. Please check file system permissions');
@@ -217,25 +233,35 @@ final class Server
 
         return false;
     }
-    public static function generateKeys(): bool
+
+    /**
+     * Generate a new pair of public/private keys for OAuth.
+     *
+     * @param bool $force If true, will force the generation of new keys even if they already exist.
+     * @return bool Returns true if new keys were generated, false if keys already exist and force is not set to true.
+     * @throws RuntimeException
+     */
+    public static function generateKeys(bool $force = false): bool
     {
-        if (self::checkKeys()) {
+        if (!$force && self::checkKeys()) {
             // Keys are already generated
             return false;
         }
 
-        // Partial data: unsure how to proceed, let the user review the files.
-        if (
-            file_exists(self::PRIVATE_KEY_PATH)
-            && !file_exists(self::PUBLIC_KEY_PATH)
-        ) {
-            throw new RuntimeException("Mising file: " . self::PUBLIC_KEY_PATH);
-        }
-        if (
-            file_exists(self::PUBLIC_KEY_PATH)
-            && !file_exists(self::PRIVATE_KEY_PATH)
-        ) {
-            throw new RuntimeException("Mising file: " . self::PRIVATE_KEY_PATH);
+        if (!$force) {
+            // Partial data: unsure how to proceed, let the user review the files.
+            if (
+                file_exists(self::PRIVATE_KEY_PATH)
+                && !file_exists(self::PUBLIC_KEY_PATH)
+            ) {
+                throw new RuntimeException("Mising file: " . self::PUBLIC_KEY_PATH);
+            }
+            if (
+                file_exists(self::PUBLIC_KEY_PATH)
+                && !file_exists(self::PRIVATE_KEY_PATH)
+            ) {
+                throw new RuntimeException("Mising file: " . self::PRIVATE_KEY_PATH);
+            }
         }
 
         // If we reach this point, both file are missing and must be generated

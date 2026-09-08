@@ -1096,7 +1096,7 @@ class Plugin extends CommonDBTM
      *
      * @return array
      */
-    public function getList(array $fields = [], array $order = ['name', 'directory'])
+    public function getList(array $fields = [], array $order = ['directory'])
     {
         global $DB;
 
@@ -3012,8 +3012,7 @@ class Plugin extends CommonDBTM
                 if (!empty($value)) {
                     $value = htmlescape($value);
                     return "<a href=\"" . $value . "\" target='_blank'>
-                     <i class='ti ti-external-link-alt fs-2x'></i><span class='sr-only'>$value</span>
-                  </a>";
+                     <i class='ti ti-external-link fs-2x'></i><span class='sr-only'>$value</span></a>";
                 }
                 return "&nbsp;";
             case 'name':
@@ -3353,6 +3352,9 @@ class Plugin extends CommonDBTM
             $to_clear[] = Grid::getAllDashboardCardsCacheKey($language);
         }
 
+        // FIXME Try to separate template cache for each Twig namespace, in order to be able to reset only the plugin Twig templates cache.
+        (new CacheManager())->resetCompiledTemplates();
+
         return $GLPI_CACHE->deleteMultiple($to_clear);
     }
 
@@ -3362,6 +3364,17 @@ class Plugin extends CommonDBTM
             'pages/admin/plugins/list_suspend_banner.html.twig',
             [
                 'execution_suspended' => $this->isPluginsExecutionSuspended(),
+            ]
+        );
+    }
+
+    final public function getPluginsUpdatableAlert(): string
+    {
+
+        return TemplateRenderer::getInstance()->render(
+            'pages/admin/plugins/updatable_alert.html.twig',
+            [
+                'count' => MarketplaceController::countUpdatablePlugins(),
             ]
         );
     }

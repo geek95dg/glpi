@@ -51,6 +51,7 @@ use DomainRecord;
 use Dropdown;
 use Entity;
 use Glpi\Asset\AssetDefinitionManager;
+use Glpi\Cache\CacheManager;
 use Glpi\Dropdown\DropdownDefinitionManager;
 use Glpi\Search\SearchOption;
 use Glpi\Tests\Log\TestHandler;
@@ -72,7 +73,6 @@ use Psr\Log\LogLevel;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionProperty;
-use RuntimeException;
 use SebastianBergmann\Comparator\ComparisonFailure;
 use Session;
 use Software;
@@ -97,9 +97,6 @@ class GLPITestCase extends TestCase
 
     public function setUp(): void
     {
-        /** @var Translator $TRANSLATE */
-        global $TRANSLATE;
-
         $this->storeGlobals();
 
         global $DB;
@@ -108,18 +105,18 @@ class GLPITestCase extends TestCase
         // By default, no session, not connected
         $this->resetSession();
 
-        // Locale from previous session may persist until another login is done.
-        if ($TRANSLATE->getLocale() !== "en_GB") {
-            // Reload default language only if needed to prevent performance hit
-            Session::loadLanguage();
-        }
-
         // By default, there shouldn't be any pictures in the test files
         $this->resetPictures();
 
         // Ensure cache is clear
         global $GLPI_CACHE;
         $GLPI_CACHE->clear();
+
+        // Some tests might change the current language, thus storing some
+        // translations in the cache
+        $manager = new CacheManager();
+        $cache = $manager->getTranslationsCacheInstance();
+        $cache->clear();
 
         // Init log handler
         global $PHPLOGGER;
@@ -143,20 +140,6 @@ class GLPITestCase extends TestCase
         // Make sure the tester plugin is never deactived by a test as it would
         // impact others tests that depend on it.
         assert(true === Plugin::isPluginActive('tester'), 'The tester plugin must be active for tests to run properly. Make sure test db is initialized and tester plugin directory doesn\'t exist.');
-
-        if (isset($_SESSION['MESSAGE_AFTER_REDIRECT']) && !$this->has_failed) {
-            unset($_SESSION['MESSAGE_AFTER_REDIRECT'][INFO]);
-            $this->assertSame(
-                [],
-                $_SESSION['MESSAGE_AFTER_REDIRECT'],
-                sprintf(
-                    "Some messages has not been handled in %s::%s:\n%s",
-                    static::class,
-                    __METHOD__/*$method*/,
-                    print_r($_SESSION['MESSAGE_AFTER_REDIRECT'], true)
-                )
-            );
-        }
 
         if (!$this->has_failed) {
             $this->assertIsArray($this->log_handler->getRecords());
@@ -190,19 +173,36 @@ class GLPITestCase extends TestCase
                 )
             );
         }
+
+        // Keep this after the logs checks, logs contains more detailled
+        // information so we prefer that the test fail with the log details
+        // rather than with the session messages details for easier debugging.
+        if (isset($_SESSION['MESSAGE_AFTER_REDIRECT']) && !$this->has_failed) {
+            unset($_SESSION['MESSAGE_AFTER_REDIRECT'][INFO]);
+            $this->assertSame(
+                [],
+                $_SESSION['MESSAGE_AFTER_REDIRECT'],
+                sprintf(
+                    "Some messages has not been handled in %s::%s:\n%s",
+                    static::class,
+                    __METHOD__/*$method*/,
+                    print_r($_SESSION['MESSAGE_AFTER_REDIRECT'], true)
+                )
+            );
+        }
     }
 
     protected function resetPictures()
     {
         // Delete contents of test files/_pictures
         $dir = GLPI_PICTURE_DIR;
-        if (!str_contains($dir, '/tests/files/_pictures')) {
-            throw new RuntimeException('Invalid picture dir: ' . $dir);
-        }
+
         // Delete nested folders and files in dir
         $this->removeDirectory($dir);
-        // We recreate the directory to ensure it's empty and present, as test rely on it being present.
-        mkdir($dir);
+        // We recreate the directory (if needed) to ensure it's empty and present, as test rely on it being present.
+        if (!is_dir($dir)) {
+            mkdir($dir);
+        }
     }
 
     protected function removeDirectory(string $dir, bool $delete_self = false): void
@@ -518,11 +518,19 @@ class GLPITestCase extends TestCase
      */
     private function resetGlobalsAndStaticValues(): void
     {
+        /** @var Translator $TRANSLATE */
+        global $TRANSLATE;
+
         // Super globals
         $_GET = $this->superglobals_copy['GET'];
         $_POST = $this->superglobals_copy['POST'];
         $_REQUEST = $this->superglobals_copy['REQUEST'];
         $_SERVER = $this->superglobals_copy['SERVER'];
+
+        // Reset language to English if it was changed by a test
+        if ($TRANSLATE->getLocale() !== 'en_GB') {
+            Session::loadLanguage('en_GB');
+        }
 
         // Globals
         global $CFG_GLPI, $FOOTER_LOADED, $HEADER_LOADED;
@@ -689,5 +697,24 @@ class GLPITestCase extends TestCase
                 $e
             );
         }
+    }
+
+    /**
+     * Clean a SQL query string by removing extra whitespaces to make it easier to compare with another SQL query string.
+     * @param $sql
+     * @return string
+     */
+    protected function cleanSQL($sql)
+    {
+        // Clean whitespaces
+        $sql = preg_replace('/\s+/', ' ', $sql);
+
+        // Remove whitespaces around parenthesis
+        $sql = preg_replace('/\(\s+/', '(', $sql);
+        $sql = preg_replace('/\s+\)/', ')', $sql);
+
+        $sql = trim($sql);
+
+        return $sql;
     }
 }

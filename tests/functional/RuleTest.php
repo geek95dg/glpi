@@ -375,8 +375,8 @@ class RuleTest extends DbTestCase
                 __('Set approval threshold (in percentage)'),
                 'validationsteps_threshold',
             ],
-            [__('Approval request to requester group manager'), 'users_id_validate_requester_supervisor'],
-            [__('Approval request to technician group manager'), 'users_id_validate_assign_supervisor'],
+            [__('Send an approval request to requester group manager'), 'users_id_validate_requester_supervisor'],
+            [__('Send an approval request to technician group manager'), 'users_id_validate_assign_supervisor'],
             [\RequestType::getTypeName(1), 'requesttypes_id'],
         ];
     }
@@ -456,6 +456,59 @@ class RuleTest extends DbTestCase
                     $relation::getTable(),
                     ['rules_id' => $cloned]
                 )
+            );
+        }
+    }
+
+    public function testCloneMultiple()
+    {
+        /** @var array $CFG_GLPI */
+        global $CFG_GLPI;
+
+        $rule = $this->createItem(RuleTicket::class, [
+            'name'        => 'Clone with altered runtime state',
+            'is_active'   => 1,
+            'entities_id' => 0,
+            'sub_type'    => RuleTicket::class,
+            'match'       => Rule::AND_MATCHING,
+            'condition'   => \RuleCommonITILObject::ONADD,
+            'description' => '',
+        ]);
+        $rules_id = $rule->getID();
+
+        $this->createItem(\RuleCriteria::class, [
+            'rules_id'  => $rules_id,
+            'criteria'  => 'name',
+            'condition' => Rule::PATTERN_CONTAIN,
+            'pattern'   => 'printer',
+        ]);
+
+        $this->createItem(\RuleAction::class, [
+            'rules_id'    => $rules_id,
+            'action_type' => 'assign',
+            'field'       => 'urgency',
+            'value'       => '5',
+        ]);
+
+        $this->assertSame('rules_id', \RuleCriteria::getItemField(RuleTicket::class));
+        $this->assertSame('rules_id', \RuleAction::getItemField(RuleTicket::class));
+
+        $this->assertTrue($rule->cloneMultiple(2));
+
+        $clones = [
+            'Clone with altered runtime state (copy)',
+            'Clone with altered runtime state (copy 2)',
+        ];
+        foreach ($clones as $clone_name) {
+            $clone = getItemByTypeName(RuleTicket::class, $clone_name);
+            $this->assertInstanceOf(RuleTicket::class, $clone);
+            $this->assertSame(
+                1,
+                countElementsInTable(\RuleCriteria::getTable(), ['rules_id' => $clone->getID()])
+            );
+            $this->assertSame(
+                1,
+                countElementsInTable(\RuleAction::getTable(), ['rules_id' => $clone->getID()])
             );
         }
     }

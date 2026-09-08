@@ -123,6 +123,11 @@ class Hooks
     public const DISPLAY_CENTRAL             = 'display_central';
 
     /**
+     * Register a function to output some content on the service catalog page.
+     */
+    public const DISPLAY_SERVICE_CATALOG     = 'display_service_catalog';
+
+    /**
      * Register a function to output some content before the network port list.
      */
     public const DISPLAY_NETPORT_LIST_BEFORE = 'display_netport_list_before';
@@ -478,6 +483,16 @@ class Hooks
      * @see CommonDBTM::prepareInputForUpdate()
      */
     public const PRE_ITEM_UPDATE           = 'pre_item_update';
+
+    /**
+     * Register a function to handle the 'post_prepareupdate' lifecycle event for an item.
+     * The function is called with the item as a parameter.
+     * The function is expected to return nothing.
+     * This hook is called after the input has been modified, but before the item is added to the database.
+     * The input can be found in the `input` property of the item. Setting the `input` property to false will cancel the update process.
+     * @see CommonDBTM::prepareInputForAdd()
+     */
+    public const POST_PREPAREUPDATE           = 'post_prepareupdate';
 
     /**
      * Register a function to handle the 'item_update' lifecycle event for an item.
@@ -1039,6 +1054,28 @@ class Hooks
      */
     public const DASHBOARD_TYPES    = 'dashboard_types';
 
+    /**
+     * Register a function to define default dashboard setup
+     * The function is called with no parameters.
+     * The function is expected to return an array of arrays describing default dashboard setups with the following properties
+     * - 'key' => the key of a dashboard
+     * - 'name' => the name of the dashboard
+     * - 'context' => the context of the dashboard
+     * - 'items' => an array of cards (see lines below)
+     *    - 'x' => x position of the card
+     *    - 'y' => y position of the card
+     *    - 'width'  => 'the width of the card
+     *    - 'height' => 'the height of the card
+     *    - 'gridstack_id' => the ID of the card in the gridstack
+     *    - 'card_id' => the ID of the card
+     *    - 'card_options' => options of the card (see lines below)
+     *      - 'color' => HTML color
+     *      - 'widgettype' => type of widget
+     *      - 'use_gradient => 1 for true, 0 for false
+     *      - 'limit' => limit of elements displayed in the card
+     */
+    public const DASHBOARD_DEFAULTS = 'dashboard_defaults';
+
     // HL API hooks
     /**
      * The hook function to call to redefine schemas.
@@ -1359,6 +1396,7 @@ class Hooks
             self::DISPLAY_LOCKED_FIELDS,
             self::DISPLAY_LOGIN,
             self::DISPLAY_CENTRAL,
+            self::DISPLAY_SERVICE_CATALOG,
             self::INIT_SESSION,
             self::POST_KANBAN_CONTENT,
             self::PRE_KANBAN_CONTENT,
@@ -1407,6 +1445,7 @@ class Hooks
             self::POST_SHOW_ITEM,
             self::POST_SHOW_TAB,
             self::POST_PREPAREADD,
+            self::POST_PREPAREUPDATE,
             self::SHOW_ITEM_STATS,
             self::TIMELINE_ACTIONS,
         ];

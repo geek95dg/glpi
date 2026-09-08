@@ -41,7 +41,7 @@
 /* global glpi_html_dialog */
 /* global glpi_toast_info, glpi_toast_warning, glpi_toast_error */
 /* global _ */
-/* global uploaded_images */
+/* global uploaded_images, removeFailedUploadImage */
 
 var timeoutglobalvar;
 
@@ -1244,6 +1244,9 @@ function updateItemOnEvent(dropdown_ids, target, url, params = {}, events = ['ch
                             resolved_params[k] = v;
                         }
                     });
+                    if ($.fn.select2) {
+                        $(target).find('.select2-hidden-accessible').select2('destroy');
+                    }
                     $(target).load(url, resolved_params);
                 };
                 if (conditional && (min_size_condition || force_load_condition)) {
@@ -1361,7 +1364,7 @@ function tableToDetails(table) {
             if (in_details) {
                 details += '\n</pre></details>';
             }
-            details += `<details><summary>${_.escape(e.textContent)}</summary><pre>\n`;
+            details += `<details><summary>${_.escape(e.textContent.trim())}</summary><pre>\n`;
             in_details = true;
         } else {
             if (in_details) {
@@ -1512,7 +1515,10 @@ $(() => {
     // General "copy to clipboard" handler.
     // TODO: refactorate existing code to use this unique handler.
     $(document).on('click', '[data-glpi-clipboard-text]', function() {
-        const text = $(this).data('glpi-clipboard-text');
+        // Read the attribute instead of `.data()`: the value may be updated
+        // dynamically (jQuery caches its data store on first read) and must not
+        // be type-casted (`.data()` would turn a numeric value into a Number).
+        const text = $(this).attr('data-glpi-clipboard-text');
         if (navigator.clipboard === undefined) {
             // The clipboard is not available in non secure environements.
             // See: https://developer.mozilla.org/en-US/docs/Web/API/Clipboard
@@ -1726,7 +1732,7 @@ function setupAjaxDropdown(config) {
             url: config.url,
             dataType: 'json',
             type: 'POST',
-            delay: 250,
+            delay: 500,
             data: function (params) {
                 query = params;
                 var data = $.extend({}, config.params, {
@@ -1809,6 +1815,16 @@ function setupAjaxDropdown(config) {
         const search_input = document.querySelector(`.select2-search__field[aria-controls='select2-${CSS.escape(e.target.id)}-results']`);
         if (search_input) {
             search_input.focus();
+        }
+    });
+
+    $('#' + field_id).on('select2:selecting', function (e) {
+        if (e?.params?.args?.data) {
+            const data = e.params.args.data;
+            const option = this.querySelector(`option[value="${CSS.escape(String(data.id))}"]`);
+            if (option) {
+                option.text = data.text;
+            }
         }
     });
 
@@ -1953,6 +1969,7 @@ function setupFileUpload(config) {
                 $.blueimp.fileupload.prototype.options.add.call(this, e, data);
             },
             done: function (event, data) {
+                const form = $(this).closest('form');
                 const uploader_name = $('#' + field_id).fileupload('option', 'formData').name;
                 // eslint-disable-next-line no-undef
                 handleUploadedFile(
@@ -1961,11 +1978,12 @@ function setupFileUpload(config) {
                     config.name,
                     $('#' + CSS.escape(config.filecontainer)),
                     config.editor_id
-                );
-                // enable submit button after upload
-                $(this).closest('form').find(':submit').prop('disabled', false);
-                // remove required
-                $('#' + field_id).removeAttr('required');
+                ).then(() => {
+                    // enable submit button after upload
+                    form.find(':submit').prop('disabled', false);
+                    // remove required
+                    $(`#${field_id}`).removeAttr('required');
+                });
             },
             fail: function (e, data) {
                 // enable submit button after upload
@@ -1974,6 +1992,9 @@ function setupFileUpload(config) {
                     ? data.jqXHR.responseText
                     : data.jqXHR.statusText;
                 alert(err);
+                $.each(data.files, function(index, file) {
+                    removeFailedUploadImage({filename: file.name, editor_id: config.editor_id});
+                });
             },
             processfail: function (e, data) {
                 // enable submit button after upload
@@ -1986,23 +2007,7 @@ function setupFileUpload(config) {
                             .css('width', '100%')
                             .show();
 
-                        // Remove failed image from TinyMCE editor to prevent base64 data in DB
-                        if (config.editor_id && typeof tinyMCE !== 'undefined') {
-                            const editor = tinyMCE.get(config.editor_id);
-                            if (editor) {
-                                const uploaded_image = uploaded_images.find((entry) => entry.filename === file.name);
-                                if (uploaded_image) {
-                                    const img = editor.dom.select('img[data-upload_id="' + CSS.escape(uploaded_image.upload_id) + '"]');
-                                    if (img.length > 0) {
-                                        editor.dom.remove(img);
-                                    }
-                                    const index = uploaded_images.findIndex((entry) => entry.upload_id === uploaded_image.upload_id);
-                                    if (index !== -1) {
-                                        uploaded_images.splice(index, 1);
-                                    }
-                                }
-                            }
-                        }
+                        removeFailedUploadImage({filename: file.name, editor_id: config.editor_id});
                         return;
                     }
                 });

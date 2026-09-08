@@ -36,6 +36,7 @@ namespace Glpi\Form\Migration;
 
 use AbstractRightsDropdown;
 use Change_Item;
+use CommonDBTM;
 use DBmysql;
 use DBmysqlIterator;
 use Entity;
@@ -84,6 +85,7 @@ use Item_Problem;
 use Item_Ticket;
 use LogicException;
 use Override;
+use Ramsey\Uuid\Uuid;
 use Throwable;
 
 use function Safe\json_decode;
@@ -103,6 +105,18 @@ class FormMigration extends AbstractPluginMigration
      * @var array<int, array>
      */
     private array $formcreator_raw_forms = [];
+
+    /**
+     * Source UUIDs already used in this run, to detect Formcreator duplicates.
+     * @var array<string, true>
+     */
+    private array $seen_form_uuids = [];
+
+    /**
+     * Form IDs already reconciled in this run, excluded from the legacy fallback.
+     * @var int[]
+     */
+    private array $claimed_form_ids = [];
 
     public function __construct(
         DBmysql $db,
@@ -186,6 +200,128 @@ class FormMigration extends AbstractPluginMigration
             3 => CreationStrategy::CREATED_UNLESS,
             default => throw new LogicException("Invalid creation value: {$creation}")
         };
+    }
+
+    /**
+     * Build the condition entry array for a single raw condition, resolving the
+     * conditioning item (Question or Comment). Returns null if the condition
+     * must be skipped.
+     *
+     * @param array{show_condition: int, show_logic: int, show_value?: string} $raw_condition  Row from glpi_plugin_formcreator_conditions
+     * @param array{itemtype: class-string<CommonDBTM>, items_id: int} $conditioning_item  Result of getMappedItemTarget() for plugin_formcreator_questions_id
+     * @param array{itemtype: class-string<CommonDBTM>, items_id: int} $target_item  Result of getMappedItemTarget() for the condition target (used for warning context)
+     * @return array{item:string,value:mixed,item_type:string,item_uuid:string,value_operator:ValueOperator,logic_operator:LogicOperator}|null
+     */
+    private function resolveConditionCriteriaEntry(
+        array $raw_condition,
+        array $conditioning_item,
+        array $target_item,
+    ): ?array {
+        if ($conditioning_item['itemtype'] === Comment::class) {
+            $comment = Comment::getById($conditioning_item['items_id']);
+            if (!$comment instanceof Comment) {
+                return null;
+            }
+            $value_operator = match ($raw_condition['show_condition']) {
+                7 => ValueOperator::VISIBLE,
+                8 => ValueOperator::NOT_VISIBLE,
+                default => null,
+            };
+            if ($value_operator === null) {
+                return null;
+            }
+            return [
+                'item'           => sprintf('comment-%s', $comment->getUUID()),
+                'value'          => '',
+                'item_type'      => 'comment',
+                'item_uuid'      => $comment->getUUID(),
+                'value_operator' => $value_operator,
+                'logic_operator' => $this->getLogicOperatorFromLegacy($raw_condition['show_logic']),
+            ];
+        }
+
+        $question = Question::getById($conditioning_item['items_id']);
+        if (!$question instanceof Question) {
+            return null;
+        }
+
+        $question_type = $question->getQuestionType();
+        if ($question_type === null) {
+            return null;
+        }
+
+        $value = $raw_condition['show_value'] ?? "";
+
+        $value_operator = $this->getValueOperatorFromLegacy(
+            $raw_condition['show_condition'],
+            $value,
+            $question_type,
+            $question->getExtraDataConfig()
+        );
+
+        if (isset($question->fields['extra_data'])) {
+            $config = $question_type->getExtraDataConfig(
+                json_decode($question->fields['extra_data'], true)
+            );
+            $condition_handlers = $question_type->getConditionHandlers($config);
+
+            if ($value_operator === null) {
+                return null;
+            }
+
+            $condition_handler = current(array_filter(
+                $condition_handlers,
+                fn(ConditionHandlerInterface $handler) => in_array(
+                    $value_operator,
+                    $handler->getSupportedValueOperators()
+                )
+            ));
+
+            if ($condition_handler === false) {
+                /** @var Form|Question|Comment|Section|FormDestination $item */
+                $item = getItemForItemtype($target_item['itemtype']);
+                if ($item !== false && $item->getFromDB($target_item['items_id']) !== false) {
+                    $form = $item instanceof Form ? $item : $item->getForm();
+                } else {
+                    $item = null;
+                    $form = null;
+                }
+
+                $this->result->addMessage(
+                    MessageType::Warning,
+                    sprintf(
+                        __('A visibility condition used in "%s" "%s" (Form "%s") with value operator "%s" is not supported by the question type. It will be ignored.'),
+                        $item->getTypeName(1) ?? $target_item['itemtype'],
+                        $item->getName() ?? $target_item['items_id'],
+                        $form->getName() ?? NOT_AVAILABLE,
+                        $value_operator->getLabel()
+                    )
+                );
+                return null;
+            }
+
+            if ($condition_handler instanceof ConditionHandlerDataConverterInterface) {
+                try {
+                    $value = $condition_handler->convertConditionValue($value);
+                } catch (FallbackToAnotherOperatorException $e) {
+                    $value_operator = $e->getOperator();
+                    $value = $e->getValue();
+                }
+            }
+        }
+
+        if ($value_operator === null) {
+            return null;
+        }
+
+        return [
+            'item'           => sprintf('question-%s', $question->getUUID()),
+            'value'          => $value,
+            'item_type'      => 'question',
+            'item_uuid'      => $question->getUUID(),
+            'value_operator' => $value_operator,
+            'logic_operator' => $this->getLogicOperatorFromLegacy($raw_condition['show_logic']),
+        ];
     }
 
     /**
@@ -330,7 +466,7 @@ class FormMigration extends AbstractPluginMigration
                 'id', 'name', 'plugin_formcreator_categories_id', 'level',
             ],
             'glpi_plugin_formcreator_forms' => [
-                'id', 'name', 'description', 'plugin_formcreator_categories_id', 'entities_id',
+                'id', 'uuid', 'name', 'description', 'plugin_formcreator_categories_id', 'entities_id',
                 'is_recursive', 'is_visible',
             ],
             'glpi_plugin_formcreator_sections' => [
@@ -498,6 +634,7 @@ class FormMigration extends AbstractPluginMigration
         $raw_forms = $this->db->request([
             'SELECT' => [
                 'id',
+                'uuid',
                 'description',
                 'content AS header',
                 'name',
@@ -513,16 +650,57 @@ class FormMigration extends AbstractPluginMigration
         ]);
 
         foreach ($raw_forms as $raw_form) {
+            $uuid = $raw_form['uuid'];
+
+            // No unique constraint on Formcreator's side: an empty or duplicate value
+            // must not merge unrelated forms.
+            if (empty($uuid) || isset($this->seen_form_uuids[$uuid])) {
+                if (!empty($uuid)) {
+                    $this->result->addMessage(
+                        MessageType::Warning,
+                        sprintf(
+                            __('Form "%s" has a UUID ("%s") already used by another form in the Formcreator data. A new UUID has been generated to avoid merging them.'),
+                            $raw_form['name'],
+                            $uuid
+                        )
+                    );
+                }
+                // Deterministic, not random: a replay must regenerate the same UUID.
+                $uuid = (string) Uuid::uuid5(Uuid::NAMESPACE_URL, 'formcreator-form-' . $raw_form['id']);
+            }
+            $this->seen_form_uuids[$uuid] = true;
+
+            $forms_categories_id = $this->getMappedItemTarget(
+                'PluginFormcreatorCategory',
+                $raw_form['plugin_formcreator_categories_id']
+            )['items_id'] ?? 0;
+
+            $reconciliation_criteria = ['uuid' => $uuid];
+            $existing_form = new Form();
+            if (!$existing_form->getFromDBByCrit($reconciliation_criteria)) {
+                // Fallback for forms migrated before reconciliation switched from name to uuid.
+                $legacy_criteria = [
+                    'name'                => $raw_form['name'],
+                    'entities_id'         => $raw_form['entities_id'],
+                    'forms_categories_id' => $forms_categories_id,
+                ];
+                if ($this->claimed_form_ids !== []) {
+                    // Skip forms already claimed this run, to avoid re-merging them.
+                    $legacy_criteria['id'] = ['NOT IN', $this->claimed_form_ids];
+                }
+                if ($existing_form->getFromDBByCrit($legacy_criteria)) {
+                    $reconciliation_criteria = ['id' => $existing_form->getID()];
+                }
+            }
+
             $form = $this->importItem(
                 Form::class,
                 [
+                    'uuid'                  => $uuid,
                     'name'                  => $raw_form['name'],
                     'header'                => $raw_form['header'],
                     'description'           => $raw_form['description'],
-                    'forms_categories_id'   => $this->getMappedItemTarget(
-                        'PluginFormcreatorCategory',
-                        $raw_form['plugin_formcreator_categories_id']
-                    )['items_id'] ?? 0,
+                    'forms_categories_id'   => $forms_categories_id,
                     'entities_id'           => $raw_form['entities_id'],
                     'is_recursive'          => $raw_form['is_recursive'],
                     'is_active'             => $raw_form['is_active'],
@@ -530,15 +708,9 @@ class FormMigration extends AbstractPluginMigration
                     'render_layout'         => 'single_page',
                     '_from_migration'       =>  true,
                 ],
-                [
-                    'name'                => $raw_form['name'],
-                    'entities_id'         => $raw_form['entities_id'],
-                    'forms_categories_id' => $this->getMappedItemTarget(
-                        'PluginFormcreatorCategory',
-                        $raw_form['plugin_formcreator_categories_id']
-                    )['items_id'] ?? 0,
-                ]
+                $reconciliation_criteria
             );
+            $this->claimed_form_ids[] = $form->getID();
 
             // Store the form for later use
             $this->forms[$raw_form['id']] = $form;
@@ -1430,125 +1602,38 @@ class FormMigration extends AbstractPluginMigration
                 $raw_condition['itemtype'],
                 $raw_condition['items_id']
             );
-            $question_id = $this->validateItemExists(
+            $conditioning_item = $this->getMappedItemTarget(
                 'PluginFormcreatorQuestion',
                 $raw_condition['plugin_formcreator_questions_id']
             );
 
             // The target_item is null if the target was not migrated or not existing.
             // In this case, we skip the condition
-            if ($target_item === null) {
-                // No need to warn the user, as this conditions was not visible/valid in formcreator anyway.
-                continue;
-            } elseif ($question_id === 0) {
-                // If the question ID is 0, it means the question was not migrated or not existing.
-                // No need to warn the user, as this condition was not visible/valid in formcreator anyway.
+            // No need to warn the user, as this condition was not visible/valid in formcreator anyway.
+            if ($target_item === null || $conditioning_item === null) {
                 continue;
             }
 
-            $question = Question::getById($question_id);
-            if (!$question instanceof Question) {
-                continue;
-            }
-
-            $question_type = $question->getQuestionType();
-            if ($question_type === null) {
-                continue;
-            }
-
-            // The value can be null for formcreator, make sure to fallback to
-            // an empty string
-            $value = $raw_condition['show_value'] ?? "";
-
-            $value_operator = $this->getValueOperatorFromLegacy(
-                $raw_condition['show_condition'],
-                $value,
-                $question_type,
-                $question->getExtraDataConfig()
+            $condition_entry = $this->resolveConditionCriteriaEntry(
+                $raw_condition,
+                $conditioning_item,
+                $target_item
             );
-
-            if (isset($question->fields['extra_data'])) {
-                $config = $question_type->getExtraDataConfig(
-                    json_decode($question->fields['extra_data'], true)
-                );
-                $condition_handlers = $question_type->getConditionHandlers($config);
-
-                // If the value operator is null, we skip this condition
-                if ($value_operator === null) {
-                    continue;
-                }
-
-                $condition_handler = current(array_filter(
-                    $condition_handlers,
-                    fn(ConditionHandlerInterface $handler) => in_array(
-                        $value_operator,
-                        $handler->getSupportedValueOperators()
-                    )
-                ));
-
-                // If no condition handler is found for the value operator, we skip this condition
-                if ($condition_handler === false) {
-                    /** @var Form|Question|Comment|Section|FormDestination $item */
-                    $item = getItemForItemtype($target_item['itemtype']);
-                    if ($item !== false && $item->getFromDB($target_item['items_id']) !== false) {
-                        $form = $item instanceof Form ? $item : $item->getForm();
-                    } else {
-                        $item = null;
-                        $form = null;
-                    }
-
-                    $this->result->addMessage(
-                        MessageType::Warning,
-                        sprintf(
-                            __('A visibility condition used in "%s" "%s" (Form "%s") with value operator "%s" is not supported by the question type. It will be ignored.'),
-                            $item->getTypeName(1) ?? $target_item['itemtype'],
-                            $item->getName() ?? $target_item['items_id'],
-                            $form->getName() ?? NOT_AVAILABLE,
-                            $value_operator->getLabel()
-                        )
-                    );
-                    continue;
-                }
-
-                // Convert the condition value if a data converter is available
-                if ($condition_handler instanceof ConditionHandlerDataConverterInterface) {
-                    try {
-                        $value = $condition_handler->convertConditionValue($value);
-                    } catch (FallbackToAnotherOperatorException $e) {
-                        // Sometimes, the original operator cant be used because
-                        // of imprecise formcreator data (e.g. non unique item
-                        // names)
-                        $value_operator = $e->getOperator();
-                        $value = $e->getValue();
-                    }
-                }
+            if ($condition_entry === null) {
+                continue;
             }
 
             if (is_a($target_item['itemtype'], FormDestination::class, true)) {
                 $creation_strategy = $this->getCreationStrategyFromLegacy($raw_condition['show_rule']);
                 if ($creation_strategy !== CreationStrategy::ALWAYS_CREATED) {
                     $conditions[$target_item['itemtype']][$target_item['items_id']]['creation_strategy'] = $creation_strategy->value;
-                    $conditions[$target_item['itemtype']][$target_item['items_id']]['conditions'][] = [
-                        'item'           => sprintf('question-%s', $question->getUUID()),
-                        'value'          => $value,
-                        'item_type'      => 'question',
-                        'item_uuid'      => $question->getUUID(),
-                        'value_operator' => $value_operator,
-                        'logic_operator' => $this->getLogicOperatorFromLegacy($raw_condition['show_logic']),
-                    ];
+                    $conditions[$target_item['itemtype']][$target_item['items_id']]['conditions'][] = $condition_entry;
                 }
             } else {
                 $visibility_strategy = $this->getVisibilityStrategyFromLegacy($raw_condition['show_rule']);
                 if ($visibility_strategy !== VisibilityStrategy::ALWAYS_VISIBLE) {
                     $conditions[$target_item['itemtype']][$target_item['items_id']]['visibility_strategy'] = $visibility_strategy->value;
-                    $conditions[$target_item['itemtype']][$target_item['items_id']]['conditions'][] = [
-                        'item'           => sprintf('question-%s', $question->getUUID()),
-                        'value'          => $value,
-                        'item_type'      => 'question',
-                        'item_uuid'      => $question->getUUID(),
-                        'value_operator' => $value_operator,
-                        'logic_operator' => $this->getLogicOperatorFromLegacy($raw_condition['show_logic']),
-                    ];
+                    $conditions[$target_item['itemtype']][$target_item['items_id']]['conditions'][] = $condition_entry;
                 }
             }
 

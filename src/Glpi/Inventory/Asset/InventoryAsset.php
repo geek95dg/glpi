@@ -42,6 +42,7 @@ use CommonDBTM;
 use CommonDropdown;
 use Computer;
 use Dropdown;
+use Glpi\Asset\Asset;
 use Glpi\Asset\Asset_PeripheralAsset;
 use Glpi\Inventory\Conf;
 use Glpi\Inventory\MainAsset\MainAsset;
@@ -234,6 +235,21 @@ abstract class InventoryAsset
                 $manufacturer_name = $value->manufacturers_id;
             }
 
+            // Set autoupdate system for all assets contained in this field and linked to the current item.
+            // Extract the asset class name (e.g., "Monitor" from "Glpi\Inventory\Asset\Monitor")
+            $asset_itemtype_ns = explode('\\', get_class($this));
+            $asset_itemtype = end($asset_itemtype_ns);
+
+            if ($temp_item = getItemForItemtype($asset_itemtype)) {
+                if ($temp_item->isField('autoupdatesystems_id') && isset($this->item->fields['autoupdatesystems_id'])) {
+                    if ($this->item->fields['autoupdatesystems_id'] == 0) {
+                        $value->autoupdatesystems_id = 0;
+                    } else {
+                        $value->autoupdatesystems_id = Dropdown::getDropdownName('glpi_autoupdatesystems', $this->item->fields['autoupdatesystems_id']);
+                    }
+                }
+            }
+
             foreach ($value as $key => &$val) {
                 if ($val instanceof stdClass || is_array($val)) {
                     continue;
@@ -243,9 +259,9 @@ abstract class InventoryAsset
                 //keep raw values...
                 $this->raw_links[$known_key] = $val;
 
-                //do not process field if it's locked
+                //do not process field if it's locked and from update process
                 foreach ($locks as $lock) {
-                    if ($key == $lock) {
+                    if ($key == $lock && !$this->item->isNewItem()) {
                         continue 2;
                     }
                 }
@@ -274,11 +290,16 @@ abstract class InventoryAsset
                         }
                         $this->known_links[$known_key] = $new_id;
                     } elseif (preg_match('/^.+models_id/', $key)) {
+                        // Resolve concrete Model class for generic assets
+                        $model_itemtype = $key === 'assets_assetmodels_id' && $this->item instanceof Asset
+                            ? $this->item->getDefinition()->getAssetModelClassName()
+                            : getItemtypeForForeignKeyField($key);
+
                         // models that need manufacturer relation for dictionary import
                         // see CommonDCModelDropdown::$additional_fields_for_dictionnary
                         $new_id = Dropdown::importExternal(
-                            getItemtypeForForeignKeyField($key),
-                            $value->$key,
+                            $model_itemtype,
+                            $value->$key ?? '',
                             $entities_id,
                             ['manufacturer' => $manufacturer_name]
                         );
@@ -293,6 +314,11 @@ abstract class InventoryAsset
                         }
                         $this->known_links[$known_key] = $new_id;
                     } elseif ($key !== 'entities_id' && $key !== 'states_id' && isForeignKeyField($key) && is_a($itemtype = getItemtypeForForeignKeyField($key), CommonDropdown::class, true)) {
+                        if ($key === 'assets_assettypes_id' && $this->item instanceof Asset) {
+                            // Resolve concrete Type class for generic assets
+                            $itemtype = $this->item->getDefinition()->getAssetTypeClassName();
+                        }
+
                         $foreignkey_itemtype[$key] = $itemtype;
 
                         $new_id = Dropdown::importExternal(
@@ -502,7 +528,7 @@ abstract class InventoryAsset
     {
         $input = ['_auto' => 1];
         if (property_exists($value, '_inventory_users')) {
-            $input = ['_inventory_users' => $value->_inventory_users];
+            $input['_inventory_users'] = $value->_inventory_users;
         }
 
         $locks = [];
@@ -527,6 +553,8 @@ abstract class InventoryAsset
                         // This is because locked fields are no longer processed or sanitized during the addition process.
                         // For more details, see: https://github.com/glpi-project/glpi/pull/19426
                         $input[$key] = $this->raw_links[$known_key];
+                    } else {
+                        $input[$key] = $val;
                     }
                 }
             } elseif (isset($this->known_links[$known_key])) {
@@ -544,7 +572,6 @@ abstract class InventoryAsset
             // Pass the tag that can be used in rules criteria
             $input['_tag'] = $data['tag'];
         }
-
         return $input;
     }
 
